@@ -162,7 +162,7 @@ def institutional_engine(symbol: str):
 
     daily = reg_trend(close[-60:])
     weekly = reg_trend(close.resample("W").last())
-    monthly = reg_trend(close.resample("ME").last())
+    monthly = reg_trend(close.resample("M").last())
 
     dow = dow_theory(close)
     wave = wave_phase(close)
@@ -214,17 +214,29 @@ def institutional_engine(symbol: str):
     )
 
     price = close.iloc[-1]
+    volume = df["Volume"].iloc[-1]  # Added volume
     atr_v = atr(df).iloc[-1]
 
-    # ===== ATR-dependent stop-loss and target =====
+    # ===== ATR-dependent stop-loss and target & backtest equity =====
     if final in ["BUY","STRONG BUY"]:
         stop_loss = round(price - 1.5*atr_v,2)
         target = round(price + 3*atr_v,2)
+        equity = [100000]
+        for i in range(1,len(df)):
+            position = equity[-1]/df["Close"].iloc[i-1]
+            equity.append(round(position*df["Close"].iloc[i],2))
+
     elif final=="SELL":
         stop_loss = round(price + 1.5*atr_v,2)
         target = round(price - 3*atr_v,2)
+        equity = [100000]
+        for i in range(1,len(df)):
+            position = equity[-1]/df["Close"].iloc[i-1]
+            # Short selling: gain if price falls
+            equity.append(round(position*(2*df["Close"].iloc[i-1]-df["Close"].iloc[i]),2))
     else:
         stop_loss = target = round(price,2)
+        equity = [price for _ in df]
 
     primary_engine = {
         "symbol":symbol,
@@ -241,6 +253,7 @@ def institutional_engine(symbol: str):
         "analysis":{
             "Daily":{
                 "Price":round(price,2),
+                "Volume":int(volume),  # Added volume to output
                 "VWAP":round(df["VWAP"].iloc[-1],2),
                 "EMA_5":round(df["EMA5"].iloc[-1],2),
                 "EMA_10":round(df["EMA10"].iloc[-1],2),
@@ -260,6 +273,7 @@ def institutional_engine(symbol: str):
             "stop_loss": stop_loss,
             "target": target
         },
+        "backtest_equity_curve": equity[-50:],
         "reason":reasons
     }
 

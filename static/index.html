@@ -126,9 +126,10 @@ function engineBlock(title, d){
     <div class="card">
         <h3>📊 Daily Technicals</h3>
         <table>
-            <tr><th>Price</th><th>VWAP</th><th>EMA5</th><th>EMA10</th><th>EMA20</th><th>Bias</th></tr>
+            <tr><th>Price</th><th>Volume</th><th>VWAP</th><th>EMA5</th><th>EMA10</th><th>EMA20</th><th>Bias</th></tr>
             <tr>
                 <td>${daily.Price ?? "-"}</td>
+                <td>${daily.Volume ?? "-"}</td>
                 <td>${daily.VWAP ?? "-"}</td>
                 <td>${daily.EMA_5 ?? "-"}</td>
                 <td>${daily.EMA_10 ?? "-"}</td>
@@ -149,6 +150,11 @@ function engineBlock(title, d){
                 <td>${ind.ATR ?? "-"}</td>
             </tr>
         </table>
+
+        ${d.backtest_equity_curve ? `
+        <h3>💹 Backtest Equity (last 10)</h3>
+        <div class="center">${d.backtest_equity_curve.slice(-10).join(" | ")}</div>
+        ` : ""}
     </div>` : ""}
 
     ${d.reason?.length ? `
@@ -184,13 +190,16 @@ function scannerTable(title, rows){
     <div class="card">
         <h2 style="text-align:center">${title}</h2>
         <table>
-            <tr><th>Symbol</th><th>Signal</th><th>Score</th><th>Trend</th></tr>
+            <tr><th>Symbol</th><th>Signal</th><th>Score</th><th>Trend</th><th>Volume</th><th>SL</th><th>Target</th></tr>
             ${rows.map(r=>`
             <tr>
                 <td>${r.symbol}</td>
                 <td class="${signalClass(r.final_signal)}">${r.final_signal}</td>
                 <td>${r["confidence_score_%"] ?? "-"}</td>
                 <td>D:${r.daily_trend ?? "-"} W:${r.weekly_trend ?? "-"} M:${r.monthly_trend ?? "-"}</td>
+                <td>${r.analysis?.Daily?.Volume ?? "-"}</td>
+                <td>${r.risk?.stop_loss ?? "-"}</td>
+                <td>${r.risk?.target ?? "-"}</td>
             </tr>`).join("")}
         </table>
     </div>`;
