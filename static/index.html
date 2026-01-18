@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Market AI – Full Engine View</title>
+<title>Market AI – Full Engine + Scanner</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <style>
 body { background:#0f172a; color:#e5e7eb; font-family:Arial; margin:0 }
 .container { max-width:1200px; margin:auto; padding:20px }
-h1 { text-align:center; color:#38bdf8 }
+h1 { text-align:center; color:#38bdf8; margin-bottom:20px }
 input { width:60%; padding:12px; font-size:16px; border-radius:6px; border:none }
 button { padding:12px 20px; background:#22c55e; border:none; border-radius:6px; cursor:pointer }
 button:hover { background:#16a34a }
@@ -30,132 +30,170 @@ hr { border:1px solid #334155; margin:30px 0 }
 
 <body>
 <div class="container">
-<h1>📈 Market AI – Primary & Combo Engine</h1>
+<h1>📈 Market AI – Full Engine + Scanner</h1>
 
 <div style="text-align:center;">
-    <input id="symbol" value="SBIN.NS">
-    <button onclick="analyze()">Analyze</button>
+<input id="symbol" placeholder="Enter NSE Symbol" value="SBIN.NS">
+<button onclick="analyze()">Analyze</button>
+<button onclick="loadScanner()">Scanner</button>
 </div>
 
 <div id="output"></div>
+<div id="scanner"></div>
 </div>
 
 <script>
-async function analyze() {
-    const symbol = document.getElementById("symbol").value.trim();
+/* ================= SIGNAL CLASS ================= */
+function signalClass(s){
+    if(!s) return "HOLD";
+    if(s.includes("STRONG") && s.includes("BUY")) return "STRONG";
+    if(s.includes("BUY")) return "BUY";
+    if(s.includes("SELL")) return "SELL";
+    return "HOLD";
+}
+
+/* ================= ANALYZE ================= */
+async function analyze(){
+    const symbol = document.getElementById("symbol").value.trim().toUpperCase();
     const out = document.getElementById("output");
+    if(!symbol){ out.innerHTML="❌ Please enter a symbol"; return; }
 
     out.innerHTML = `<div class="loading">⏳ Analyzing ${symbol}...</div>`;
 
-    try {
-        const res = await fetch(`/analyze?symbol=${symbol}`);
-        const json = await res.json();
+    try{
+        const res = await fetch(`${window.location.origin}/analyze?symbol=${symbol}`);
+        if(!res.ok) throw new Error("HTTP "+res.status);
+        const j = await res.json();
 
-        console.log("FULL RESPONSE", json);
+        if(j.error){
+            out.innerHTML = `<div class="card"><h2 style="text-align:center">Error</h2><p style="text-align:center;">❌ ${j.error}</p></div>`;
+            return;
+        }
 
-        const P = json.primary_engine;
-        const C = json.combo_engine;
+        out.innerHTML =
+            engineBlock("PRIMARY ENGINE", j.primary_engine) +
+            "<hr>" +
+            engineBlock("COMBO ENGINE", j.combo_engine);
 
-        out.innerHTML = `
-        ${engineBlock("PRIMARY ENGINE", P, true)}
-        <hr>
-        ${engineBlock("COMBO ENGINE", C, false)}
-        `;
-    }
-    catch (e) {
+    }catch(e){
         console.error(e);
-        out.innerHTML = "❌ JavaScript error – check console";
+        out.innerHTML = `<div class="card"><h2 style="text-align:center">Error</h2><p style="text-align:center;">❌ JS / API error – check console</p></div>`;
     }
 }
 
-function engineBlock(title, d, showProb) {
+/* ================= ENGINE BLOCK ================= */
+function engineBlock(title, d){
+    if(!d) return "";
+
     let cls = "HOLD";
-    if (d.final_signal.includes("STRONG")) cls = "STRONG";
-    else if (d.final_signal.includes("BUY")) cls = "BUY";
-    else if (d.final_signal.includes("SELL")) cls = "SELL";
+    if(d.final_signal?.includes("STRONG")) cls = "STRONG";
+    else if(d.final_signal?.includes("BUY")) cls = "BUY";
+    else if(d.final_signal?.includes("SELL")) cls = "SELL";
+
+    const daily = d.analysis?.Daily || {};
+    const ind   = d.analysis?.Indicators || {};
+    const risk  = d.risk || {};
 
     return `
     <div class="card">
         <h2 style="text-align:center">${title}</h2>
-        <div class="signal ${cls}">${d.final_signal}</div>
+        <div class="signal ${cls}">${d.final_signal ?? "-"}</div>
 
         <div class="center">
-            ${showProb ? `Probability: <b>${d["probability_%"]}%</b>` : 
-            `Confidence: <b>${d["confidence_score_%"]}% (${d.confidence_band})</b>`}
+            Confidence: <b>${d["confidence_score_%"] ?? "-"}</b>
+            ${d.confidence_band ? `(${d.confidence_band})` : ""}
         </div>
 
         <div class="center">
-            AI Model: <b>${d.ai_model}</b> |
-            AI Trend: <b>${d.ai_trend ?? d.ai_model}</b>
+            AI Model: <b>${d.ai_model ?? "-"}</b> |
+            AI Trend: <b>${d.ai_trend ?? "-"}</b> |
+            Prob: <b>${d["ai_probability_%"] ?? "-"}%</b>
         </div>
 
         <div class="center">
-            Regression: <b>${d.regression_trend}</b> |
-            Daily: <b>${d.daily_trend ?? "N/A"}</b> |
-            Weekly: <b>${d.weekly_trend}</b> |
-            Monthly: <b>${d.monthly_trend}</b>
+            Trends → D:${d.daily_trend ?? "-"} |
+            W:${d.weekly_trend ?? "-"} |
+            M:${d.monthly_trend ?? "-"}
         </div>
 
         <div class="center">
-            SL: <b>${d.stop_loss ?? d.risk?.stop_loss}</b> |
-            Target: <b>${d.target ?? d.risk?.target}</b>
-        </div>
-
-        <div class="center">
-            Options Signal: <b>${d.options_chain?.signal}</b>
+            SL: <b>${risk.stop_loss ?? "-"}</b> |
+            Target: <b>${risk.target ?? "-"}</b>
         </div>
     </div>
 
-    ${analysisTable(d.analysis)}
+    ${d.analysis ? `
+    <div class="card">
+        <h3>📊 Daily Technicals</h3>
+        <table>
+            <tr><th>Price</th><th>VWAP</th><th>EMA5</th><th>EMA10</th><th>EMA20</th><th>Bias</th></tr>
+            <tr>
+                <td>${daily.Price ?? "-"}</td>
+                <td>${daily.VWAP ?? "-"}</td>
+                <td>${daily.EMA_5 ?? "-"}</td>
+                <td>${daily.EMA_10 ?? "-"}</td>
+                <td>${daily.EMA_20 ?? "-"}</td>
+                <td>${daily.Bias ?? "-"}</td>
+            </tr>
+        </table>
 
-    ${d.forecast ? forecastBlock(d.forecast) : ""}
+        <h3>🧠 Indicators</h3>
+        <table>
+            <tr><th>RSI</th><th>MACD</th><th>Stoch %K</th><th>Dow</th><th>Wave</th><th>ATR</th></tr>
+            <tr>
+                <td>${ind.RSI ?? "-"}</td>
+                <td>${ind.MACD_hist ?? "-"}</td>
+                <td>${ind["Stochastic_%K"] ?? "-"}</td>
+                <td>${ind.Dow_Theory ?? "-"}</td>
+                <td>${ind.Wave_Phase ?? "-"}</td>
+                <td>${ind.ATR ?? "-"}</td>
+            </tr>
+        </table>
+    </div>` : ""}
 
+    ${d.reason?.length ? `
     <div class="card">
         <h3>🧠 Reasons</h3>
-        <ul>${(d.reason || []).map(r => `<li>${r}</li>`).join("")}</ul>
-    </div>
+        <ul>${d.reason.map(r=>`<li>${r}</li>`).join("")}</ul>
+    </div>` : ""}
     `;
 }
 
-function analysisTable(a) {
-    if (!a) return "";
+/* ================= SCANNER ================= */
+async function loadScanner(){
+    const box = document.getElementById("scanner");
+    box.innerHTML = `<div class="loading">⏳ Loading scanner...</div>`;
+    try{
+        const res = await fetch(`${window.location.origin}/scanner/index`);
+        if(!res.ok) throw new Error("HTTP "+res.status);
+        const j = await res.json();
+
+        box.innerHTML =
+            scannerTable("🚀 TOP BUY", j.TOP_BUY) +
+            scannerTable("🔻 TOP SELL", j.TOP_SELL);
+
+    }catch(e){
+        console.error(e);
+        box.innerHTML = `<div class="card"><h2 style="text-align:center">Error</h2><p style="text-align:center;">❌ Scanner error – check console</p></div>`;
+    }
+}
+
+function scannerTable(title, rows){
+    if(!rows || !rows.length) return "";
     return `
     <div class="card">
-        <h3>📊 EMA + VWAP Analysis</h3>
+        <h2 style="text-align:center">${title}</h2>
         <table>
+            <tr><th>Symbol</th><th>Signal</th><th>Score</th><th>Trend</th></tr>
+            ${rows.map(r=>`
             <tr>
-                <th>TF</th><th>Price</th><th>VWAP</th>
-                <th>EMA5</th><th>EMA10</th><th>EMA20</th><th>Bias</th>
-            </tr>
-            ${row("Daily", a.Daily)}
-            ${a["1H"] ? row("1H", a["1H"]) : ""}
-            ${a["4H"] ? row("4H", a["4H"]) : ""}
+                <td>${r.symbol}</td>
+                <td class="${signalClass(r.final_signal)}">${r.final_signal}</td>
+                <td>${r["confidence_score_%"] ?? "-"}</td>
+                <td>D:${r.daily_trend ?? "-"} W:${r.weekly_trend ?? "-"} M:${r.monthly_trend ?? "-"}</td>
+            </tr>`).join("")}
         </table>
     </div>`;
-}
-
-function forecastBlock(f) {
-    return `
-    <div class="card">
-        <h3>🔮 Forecast</h3>
-        <b>Daily (5 Days):</b> ${f.daily_next_5_days.join(", ")}<br>
-        <b>Weekly (5 Weeks):</b> ${f.weekly_next_5_weeks.join(", ")}<br>
-        <b>Monthly (5 Months):</b> ${f.monthly_next_5_months.join(", ")}<br>
-        <b>AI (5 Days):</b> ${f.ai_next_5_days.join(", ")}
-    </div>`;
-}
-
-function row(tf, d) {
-    return `
-    <tr>
-        <td>${tf}</td>
-        <td>${d.Price}</td>
-        <td>${d.VWAP}</td>
-        <td>${d.EMA_5}</td>
-        <td>${d.EMA_10}</td>
-        <td>${d.EMA_20}</td>
-        <td>${d.Bias}</td>
-    </tr>`;
 }
 </script>
 </body>
