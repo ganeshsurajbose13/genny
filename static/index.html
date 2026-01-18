@@ -52,33 +52,30 @@ function signalClass(s){
     return "HOLD";
 }
 
-/* ================= ANALYZE ================= */
-async function analyze(){
-    const symbol = document.getElementById("symbol").value.trim().toUpperCase();
-    const out = document.getElementById("output");
-    if(!symbol){ out.innerHTML="❌ Please enter a symbol"; return; }
+/* ================= FORMAT NUMBERS ================= */
+function formatNum(n){ return n!=null ? n.toLocaleString() : "-"; }
+function formatDec(n, d=2){ return n!=null ? n.toFixed(d) : "-"; }
 
-    out.innerHTML = `<div class="loading">⏳ Analyzing ${symbol}...</div>`;
-
-    try{
-        const res = await fetch(`${window.location.origin}/analyze?symbol=${symbol}`);
-        if(!res.ok) throw new Error("HTTP "+res.status);
-        const j = await res.json();
-
-        if(j.error){
-            out.innerHTML = `<div class="card"><h2 style="text-align:center">Error</h2><p style="text-align:center;">❌ ${j.error}</p></div>`;
-            return;
-        }
-
-        out.innerHTML =
-            engineBlock("PRIMARY ENGINE", j.primary_engine) +
-            "<hr>" +
-            engineBlock("COMBO ENGINE", j.combo_engine);
-
-    }catch(e){
-        console.error(e);
-        out.innerHTML = `<div class="card"><h2 style="text-align:center">Error</h2><p style="text-align:center;">❌ JS / API error – check console</p></div>`;
-    }
+/* ================= TECH TABLE ================= */
+function techTable(tname,tech){
+    if(!tech) return `<p>${tname} data not available</p>`;
+    return `<h3>${tname}</h3>
+    <table>
+    <tr><th>Price</th><th>Volume</th><th>VWAP</th><th>EMA5</th><th>EMA10</th><th>EMA20</th><th>Bias</th><th>RSI</th><th>MACD Hist</th><th>%K</th><th>ATR</th></tr>
+    <tr>
+    <td>${formatDec(tech.Price)}</td>
+    <td>${formatNum(tech.Volume)}</td>
+    <td>${formatDec(tech.VWAP)}</td>
+    <td>${formatDec(tech.EMA_5)}</td>
+    <td>${formatDec(tech.EMA_10)}</td>
+    <td>${formatDec(tech.EMA_20)}</td>
+    <td>${tech.Bias ?? "-"}</td>
+    <td>${formatDec(tech.RSI)}</td>
+    <td>${formatDec(tech.MACD_hist)}</td>
+    <td>${formatDec(tech["Stochastic_%K"])}</td>
+    <td>${formatDec(tech.ATR)}</td>
+    </tr>
+    </table>`;
 }
 
 /* ================= ENGINE BLOCK ================= */
@@ -107,7 +104,7 @@ function engineBlock(title, d){
         <div class="center">
             AI Model: <b>${d.ai_model ?? "-"}</b> |
             AI Trend: <b>${d.ai_trend ?? "-"}</b> |
-            Prob: <b>${d["ai_probability_%"] ?? "-"}%</b>
+            Prob: <b>${formatDec(d["ai_probability_%"])}%</b>
         </div>
 
         <div class="center">
@@ -117,44 +114,35 @@ function engineBlock(title, d){
         </div>
 
         <div class="center">
-            SL: <b>${risk.stop_loss ?? "-"}</b> |
-            Target: <b>${risk.target ?? "-"}</b>
+            SL: <b>${formatDec(risk.stop_loss)}</b> |
+            Target: <b>${formatDec(risk.target)}</b>
         </div>
     </div>
 
     ${d.analysis ? `
     <div class="card">
-        <h3>📊 Daily Technicals</h3>
-        <table>
-            <tr><th>Price</th><th>Volume</th><th>VWAP</th><th>EMA5</th><th>EMA10</th><th>EMA20</th><th>Bias</th></tr>
-            <tr>
-                <td>${daily.Price ?? "-"}</td>
-                <td>${daily.Volume ?? "-"}</td>
-                <td>${daily.VWAP ?? "-"}</td>
-                <td>${daily.EMA_5 ?? "-"}</td>
-                <td>${daily.EMA_10 ?? "-"}</td>
-                <td>${daily.EMA_20 ?? "-"}</td>
-                <td>${daily.Bias ?? "-"}</td>
-            </tr>
-        </table>
+        ${techTable("Daily", d.analysis.Daily)}
+        ${techTable("4H", d.analysis["4H"])}
+        ${techTable("1H", d.analysis["1H"])}
 
         <h3>🧠 Indicators</h3>
         <table>
             <tr><th>RSI</th><th>MACD</th><th>Stoch %K</th><th>Dow</th><th>Wave</th><th>ATR</th></tr>
             <tr>
-                <td>${ind.RSI ?? "-"}</td>
-                <td>${ind.MACD_hist ?? "-"}</td>
-                <td>${ind["Stochastic_%K"] ?? "-"}</td>
+                <td>${formatDec(ind.RSI)}</td>
+                <td>${formatDec(ind.MACD_hist)}</td>
+                <td>${formatDec(ind["Stochastic_%K"])}</td>
                 <td>${ind.Dow_Theory ?? "-"}</td>
                 <td>${ind.Wave_Phase ?? "-"}</td>
-                <td>${ind.ATR ?? "-"}</td>
+                <td>${formatDec(ind.ATR)}</td>
             </tr>
         </table>
 
         ${d.backtest_equity_curve ? `
         <h3>💹 Backtest Equity (last 10)</h3>
-        <div class="center">${d.backtest_equity_curve.slice(-10).join(" | ")}</div>
+        <div class="center">${d.backtest_equity_curve.slice(-10).map(formatDec).join(" | ")}</div>
         ` : ""}
+
     </div>` : ""}
 
     ${d.reason?.length ? `
@@ -163,6 +151,35 @@ function engineBlock(title, d){
         <ul>${d.reason.map(r=>`<li>${r}</li>`).join("")}</ul>
     </div>` : ""}
     `;
+}
+
+/* ================= ANALYZE ================= */
+async function analyze(){
+    const symbol = document.getElementById("symbol").value.trim().toUpperCase();
+    const out = document.getElementById("output");
+    if(!symbol){ out.innerHTML="❌ Please enter a symbol"; return; }
+
+    out.innerHTML = `<div class="loading">⏳ Analyzing ${symbol}...</div>`;
+
+    try{
+        const res = await fetch(`${window.location.origin}/analyze?symbol=${symbol}`);
+        if(!res.ok) throw new Error("HTTP "+res.status);
+        const j = await res.json();
+
+        if(j.error){
+            out.innerHTML = `<div class="card"><h2 style="text-align:center">Error</h2><p style="text-align:center;">❌ ${j.error}</p></div>`;
+            return;
+        }
+
+        out.innerHTML =
+            engineBlock("PRIMARY ENGINE", j.primary_engine) +
+            "<hr>" +
+            engineBlock("COMBO ENGINE", j.combo_engine);
+
+    }catch(e){
+        console.error(e);
+        out.innerHTML = `<div class="card"><h2 style="text-align:center">Error</h2><p style="text-align:center;">❌ JS / API error – check console</p></div>`;
+    }
 }
 
 /* ================= SCANNER ================= */
@@ -195,11 +212,11 @@ function scannerTable(title, rows){
             <tr>
                 <td>${r.symbol}</td>
                 <td class="${signalClass(r.final_signal)}">${r.final_signal}</td>
-                <td>${r["confidence_score_%"] ?? "-"}</td>
+                <td>${formatDec(r["confidence_score_%"])}</td>
                 <td>D:${r.daily_trend ?? "-"} W:${r.weekly_trend ?? "-"} M:${r.monthly_trend ?? "-"}</td>
-                <td>${r.analysis?.Daily?.Volume ?? "-"}</td>
-                <td>${r.risk?.stop_loss ?? "-"}</td>
-                <td>${r.risk?.target ?? "-"}</td>
+                <td>${formatNum(r.analysis?.Daily?.Volume)}</td>
+                <td>${formatDec(r.risk?.stop_loss)}</td>
+                <td>${formatDec(r.risk?.target)}</td>
             </tr>`).join("")}
         </table>
     </div>`;
