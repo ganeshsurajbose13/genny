@@ -2,225 +2,194 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Market AI – Full Engine + Scanner</title>
+<title>Market AI Scanner</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <style>
-body { background:#0f172a; color:#e5e7eb; font-family:Arial; margin:0 }
-.container { max-width:1200px; margin:auto; padding:20px }
-h1 { text-align:center; color:#38bdf8; margin-bottom:20px }
-input { width:60%; padding:12px; font-size:16px; border-radius:6px; border:none }
-button { padding:12px 20px; background:#22c55e; border:none; border-radius:6px; cursor:pointer }
-button:hover { background:#16a34a }
-.card { background:#020617; border-radius:10px; padding:16px; margin-top:20px }
-.signal { font-size:30px; font-weight:bold; text-align:center }
-.STRONG { color:#22c55e }
-.BUY { color:#4ade80 }
-.HOLD { color:#eab308 }
-.SELL { color:#ef4444 }
-.center { text-align:center; margin-top:6px }
-table { width:100%; border-collapse:collapse; margin-top:10px }
-th, td { padding:8px; border-bottom:1px solid #334155; text-align:center }
-th { color:#38bdf8 }
-ul { padding-left:20px }
-.loading { text-align:center; font-size:18px }
-hr { border:1px solid #334155; margin:30px 0 }
+body{
+    font-family: Arial, Helvetica, sans-serif;
+    background:#0f172a;
+    color:#e5e7eb;
+    margin:0;
+    padding:14px;
+}
+h1,h2,h3,h4{color:#38bdf8;margin:6px 0}
+input,button{
+    padding:10px;
+    font-size:14px;
+}
+input{width:160px}
+button{
+    cursor:pointer;
+    background:#2563eb;
+    border:none;
+    color:white;
+    border-radius:6px;
+}
+.card{
+    background:#020617;
+    padding:14px;
+    border-radius:10px;
+    margin-bottom:14px;
+    box-shadow:0 0 12px rgba(0,0,0,0.45);
+}
+.grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+    gap:12px;
+}
+.badge{
+    padding:4px 10px;
+    border-radius:6px;
+    font-size:12px;
+    display:inline-block;
+}
+.buy{background:#16a34a}
+.sell{background:#dc2626}
+.hold{background:#6b7280}
+.small{font-size:12px;color:#94a3b8}
+table{
+    width:100%;
+    border-collapse:collapse;
+    margin-top:6px;
+}
+td{
+    padding:5px 6px;
+    border-bottom:1px solid #1e293b;
+}
+@media(max-width:600px){
+    input{width:100%}
+    button{width:100%;margin-top:6px}
+}
 </style>
 </head>
 
 <body>
-<div class="container">
-<h1>📈 Market AI – Full Engine + Scanner</h1>
 
-<div style="text-align:center;">
-<input id="symbol" placeholder="Enter NSE Symbol" value="SBIN.NS">
-<button onclick="analyze()">Analyze</button>
-<button onclick="loadScanner()">Scanner</button>
+<h1>📈 Market AI Scanner</h1>
+
+<div class="card">
+    <input id="symbol" placeholder="RELIANCE.NS">
+    <button onclick="analyze()">Analyze</button>
+    <button onclick="loadScanner()">Scanner</button>
 </div>
 
-<div id="output"></div>
-<div id="scanner"></div>
-</div>
+<div id="result"></div>
 
 <script>
-/* ================= SIGNAL CLASS ================= */
-function signalClass(s){
-    if(!s) return "HOLD";
-    if(s.includes("STRONG") && s.includes("BUY")) return "STRONG";
-    if(s.includes("BUY")) return "BUY";
-    if(s.includes("SELL")) return "SELL";
-    return "HOLD";
+const API = ""; // same host
+
+/* ---------- helpers ---------- */
+function safeNum(v, d=2){
+    if(v === undefined || v === null) return "-";
+    const n = Number(v);
+    if(isNaN(n)) return "-";
+    return n.toFixed(d);
+}
+function badgeCls(s){
+    if(!s) return "hold";
+    s = s.toUpperCase();
+    if(s.includes("BUY")) return "buy";
+    if(s.includes("SELL")) return "sell";
+    return "hold";
 }
 
-/* ================= FORMAT NUMBERS ================= */
-function formatNum(n){ return n!=null ? n.toLocaleString() : "-"; }
-function formatDec(n, d=2){ return n!=null ? n.toFixed(d) : "-"; }
+/* ---------- analyze ---------- */
+async function analyze(sym){
+    const symbol = sym || document.getElementById("symbol").value.trim();
+    if(!symbol) return alert("Enter symbol");
 
-/* ================= TECH TABLE ================= */
-function techTable(tname,tech){
-    if(!tech) return `<p>${tname} data not available</p>`;
-    return `<h3>${tname}</h3>
-    <table>
-    <tr><th>Price</th><th>Volume</th><th>VWAP</th><th>EMA5</th><th>EMA10</th><th>EMA20</th><th>Bias</th><th>RSI</th><th>MACD Hist</th><th>%K</th><th>ATR</th></tr>
-    <tr>
-    <td>${formatDec(tech.Price)}</td>
-    <td>${formatNum(tech.Volume)}</td>
-    <td>${formatDec(tech.VWAP)}</td>
-    <td>${formatDec(tech.EMA_5)}</td>
-    <td>${formatDec(tech.EMA_10)}</td>
-    <td>${formatDec(tech.EMA_20)}</td>
-    <td>${tech.Bias ?? "-"}</td>
-    <td>${formatDec(tech.RSI)}</td>
-    <td>${formatDec(tech.MACD_hist)}</td>
-    <td>${formatDec(tech["Stochastic_%K"])}</td>
-    <td>${formatDec(tech.ATR)}</td>
-    </tr>
-    </table>`;
+    const res = await fetch(`${API}/analyze?symbol=${symbol}`);
+    if(!res.ok) return alert("Analyze API error");
+
+    const data = await res.json();
+    renderAnalysis(data.primary_engine);
 }
 
-/* ================= ENGINE BLOCK ================= */
-function engineBlock(title, d){
-    if(!d) return "";
-
-    let cls = "HOLD";
-    if(d.final_signal?.includes("STRONG")) cls = "STRONG";
-    else if(d.final_signal?.includes("BUY")) cls = "BUY";
-    else if(d.final_signal?.includes("SELL")) cls = "SELL";
-
-    const daily = d.analysis?.Daily || {};
-    const ind   = d.analysis?.Indicators || {};
-    const risk  = d.risk || {};
-
-    return `
+/* ---------- render analysis ---------- */
+function renderAnalysis(p){
+    let html = `
     <div class="card">
-        <h2 style="text-align:center">${title}</h2>
-        <div class="signal ${cls}">${d.final_signal ?? "-"}</div>
-
-        <div class="center">
-            Confidence: <b>${d["confidence_score_%"] ?? "-"}</b>
-            ${d.confidence_band ? `(${d.confidence_band})` : ""}
-        </div>
-
-        <div class="center">
-            AI Model: <b>${d.ai_model ?? "-"}</b> |
-            AI Trend: <b>${d.ai_trend ?? "-"}</b> |
-            Prob: <b>${formatDec(d["ai_probability_%"])}%</b>
-        </div>
-
-        <div class="center">
-            Trends → D:${d.daily_trend ?? "-"} |
-            W:${d.weekly_trend ?? "-"} |
-            M:${d.monthly_trend ?? "-"}
-        </div>
-
-        <div class="center">
-            SL: <b>${formatDec(risk.stop_loss)}</b> |
-            Target: <b>${formatDec(risk.target)}</b>
-        </div>
+        <h2>${p.symbol}</h2>
+        <span class="badge ${badgeCls(p.final_signal)}">${p.final_signal}</span>
+        <p>Confidence:
+            <b>${safeNum(p["confidence_score_%"],1)}%</b>
+            (${p.confidence_band})
+        </p>
+        <p class="small">
+            Daily: ${p.daily_trend} |
+            Weekly: ${p.weekly_trend} |
+            Monthly: ${p.monthly_trend}
+        </p>
     </div>
 
-    ${d.analysis ? `
-    <div class="card">
-        ${techTable("Daily", d.analysis.Daily)}
-        ${techTable("4H", d.analysis["4H"])}
-        ${techTable("1H", d.analysis["1H"])}
+    <div class="grid">
+        ${renderTF("1D", p.analysis["1D"])}
+        ${renderTF("4H", p.analysis["4H"])}
+        ${renderTF("1H", p.analysis["1H"])}
+    </div>
+    `;
+    document.getElementById("result").innerHTML = html;
+}
 
-        <h3>🧠 Indicators</h3>
+/* ---------- timeframe block ---------- */
+function renderTF(tf, d){
+    if(!d) return "";
+    return `
+    <div class="card">
+        <h3>${tf} Timeframe</h3>
+
         <table>
-            <tr><th>RSI</th><th>MACD</th><th>Stoch %K</th><th>Dow</th><th>Wave</th><th>ATR</th></tr>
-            <tr>
-                <td>${formatDec(ind.RSI)}</td>
-                <td>${formatDec(ind.MACD_hist)}</td>
-                <td>${formatDec(ind["Stochastic_%K"])}</td>
-                <td>${ind.Dow_Theory ?? "-"}</td>
-                <td>${ind.Wave_Phase ?? "-"}</td>
-                <td>${formatDec(ind.ATR)}</td>
-            </tr>
+            <tr><td>Price</td><td>${safeNum(d.Price)}</td></tr>
+            <tr><td>Volume</td><td>${d.Volume ?? "-"}</td></tr>
+            <tr><td>VWAP</td><td>${safeNum(d.VWAP)}</td></tr>
+            <tr><td>EMA 5</td><td>${safeNum(d.EMA5)}</td></tr>
+            <tr><td>EMA 10</td><td>${safeNum(d.EMA10)}</td></tr>
+            <tr><td>EMA 20</td><td>${safeNum(d.EMA20)}</td></tr>
+            <tr><td>Bias</td><td>${d.Bias}</td></tr>
         </table>
 
-        ${d.backtest_equity_curve ? `
-        <h3>💹 Backtest Equity (last 10)</h3>
-        <div class="center">${d.backtest_equity_curve.slice(-10).map(formatDec).join(" | ")}</div>
-        ` : ""}
+        <h4>Indicators</h4>
+        <table>
+            <tr><td>RSI</td><td>${safeNum(d.Indicators.RSI)}</td></tr>
+            <tr><td>MACD Hist</td><td>${safeNum(d.Indicators.MACD_hist,4)}</td></tr>
+            <tr><td>Stochastic %K</td><td>${safeNum(d.Indicators["Stochastic_%K"])}</td></tr>
+            <tr><td>ATR</td><td>${safeNum(d.Indicators.ATR)}</td></tr>
+            <tr><td>Dow Theory</td><td>${d.Indicators.Dow_Theory}</td></tr>
+            <tr><td>Wave Phase</td><td>${d.Indicators.Wave_Phase}</td></tr>
+        </table>
 
-    </div>` : ""}
-
-    ${d.reason?.length ? `
-    <div class="card">
-        <h3>🧠 Reasons</h3>
-        <ul>${d.reason.map(r=>`<li>${r}</li>`).join("")}</ul>
-    </div>` : ""}
+        <h4>Risk</h4>
+        <table>
+            <tr><td>Stop Loss</td><td>${safeNum(d.risk.stop_loss)}</td></tr>
+            <tr><td>Target</td><td>${safeNum(d.risk.target)}</td></tr>
+        </table>
+    </div>
     `;
 }
 
-/* ================= ANALYZE ================= */
-async function analyze(){
-    const symbol = document.getElementById("symbol").value.trim().toUpperCase();
-    const out = document.getElementById("output");
-    if(!symbol){ out.innerHTML="❌ Please enter a symbol"; return; }
-
-    out.innerHTML = `<div class="loading">⏳ Analyzing ${symbol}...</div>`;
-
-    try{
-        const res = await fetch(`${window.location.origin}/analyze?symbol=${symbol}`);
-        if(!res.ok) throw new Error("HTTP "+res.status);
-        const j = await res.json();
-
-        if(j.error){
-            out.innerHTML = `<div class="card"><h2 style="text-align:center">Error</h2><p style="text-align:center;">❌ ${j.error}</p></div>`;
-            return;
-        }
-
-        out.innerHTML =
-            engineBlock("PRIMARY ENGINE", j.primary_engine) +
-            "<hr>" +
-            engineBlock("COMBO ENGINE", j.combo_engine);
-
-    }catch(e){
-        console.error(e);
-        out.innerHTML = `<div class="card"><h2 style="text-align:center">Error</h2><p style="text-align:center;">❌ JS / API error – check console</p></div>`;
-    }
-}
-
-/* ================= SCANNER ================= */
+/* ---------- scanner ---------- */
 async function loadScanner(){
-    const box = document.getElementById("scanner");
-    box.innerHTML = `<div class="loading">⏳ Loading scanner...</div>`;
-    try{
-        const res = await fetch(`${window.location.origin}/scanner/index`);
-        if(!res.ok) throw new Error("HTTP "+res.status);
-        const j = await res.json();
+    const res = await fetch(`${API}/scanner`);
+    if(!res.ok) return alert("Scanner API error");
 
-        box.innerHTML =
-            scannerTable("🚀 TOP BUY", j.TOP_BUY) +
-            scannerTable("🔻 TOP SELL", j.TOP_SELL);
+    const data = await res.json();
+    let html = `<div class="card"><h2>Scanner Results</h2></div><div class="grid">`;
 
-    }catch(e){
-        console.error(e);
-        box.innerHTML = `<div class="card"><h2 style="text-align:center">Error</h2><p style="text-align:center;">❌ Scanner error – check console</p></div>`;
-    }
-}
+    [...data.TOP_BUY, ...data.TOP_SELL].forEach(x=>{
+        html += `
+        <div class="card">
+            <h3>${x.symbol}</h3>
+            <span class="badge ${badgeCls(x.signal)}">${x.signal}</span>
+            <p>Score: <b>${safeNum(x.score,1)}</b></p>
+            <button onclick="analyze('${x.symbol}')">View</button>
+        </div>`;
+    });
 
-function scannerTable(title, rows){
-    if(!rows || !rows.length) return "";
-    return `
-    <div class="card">
-        <h2 style="text-align:center">${title}</h2>
-        <table>
-            <tr><th>Symbol</th><th>Signal</th><th>Score</th><th>Trend</th><th>Volume</th><th>SL</th><th>Target</th></tr>
-            ${rows.map(r=>`
-            <tr>
-                <td>${r.symbol}</td>
-                <td class="${signalClass(r.final_signal)}">${r.final_signal}</td>
-                <td>${formatDec(r["confidence_score_%"])}</td>
-                <td>D:${r.daily_trend ?? "-"} W:${r.weekly_trend ?? "-"} M:${r.monthly_trend ?? "-"}</td>
-                <td>${formatNum(r.analysis?.Daily?.Volume)}</td>
-                <td>${formatDec(r.risk?.stop_loss)}</td>
-                <td>${formatDec(r.risk?.target)}</td>
-            </tr>`).join("")}
-        </table>
-    </div>`;
+    html += "</div>";
+    document.getElementById("result").innerHTML = html;
 }
 </script>
+
 </body>
 </html>
