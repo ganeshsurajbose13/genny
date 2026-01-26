@@ -1,0 +1,48 @@
+from tensorflow.keras import backend as K
+
+def lstm_engine(symbol, df):
+    try:
+        close = df["Close"].dropna()
+        if len(close) < 120:
+            return 50.0, "NEUTRAL"
+
+        scaler = MinMaxScaler()
+        scaled = scaler.fit_transform(close.values.reshape(-1,1))
+
+        X, y = [], []
+        for i in range(60, len(scaled)):
+            X.append(scaled[i-60:i, 0])
+            y.append(scaled[i, 0])
+
+        X = np.array(X).reshape(-1, 60, 1)
+        y = np.array(y)
+
+        model_path = f"{MODEL_DIR}/{symbol.replace('.','_')}.keras"
+
+        if not os.path.exists(model_path):
+            model = Sequential([
+                LSTM(32, input_shape=(60,1)),
+                Dense(1)
+            ])
+            model.compile(optimizer="adam", loss="mse")
+            model.fit(X, y, epochs=3, batch_size=32, verbose=0)
+            model.save(model_path)
+        else:
+            model = load_model(model_path, compile=False)
+
+        pred = model.predict(X[-1:].reshape(1,60,1), verbose=0)
+        prediction = float(scaler.inverse_transform(pred)[0][0])
+
+        delta = prediction - float(close.iloc[-1])
+        prob = float(np.clip(50 + delta * 2, 0, 100))
+        trend = "UP" if delta > 0 else "DOWN"
+
+        # 🔥 CRITICAL FOR RENDER
+        K.clear_session()
+        del model
+
+        return round(prob,2), trend
+
+    except Exception:
+        K.clear_session()
+        return 50.0, "NEUTRAL"

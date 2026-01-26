@@ -13,3 +13,6 @@ tensorflow
 joblib
 matplotlib
 xgboost
+yahooquery
+python-multipart
+jinja2

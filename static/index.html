@@ -57,6 +57,7 @@ td{
     padding:5px 6px;
     border-bottom:1px solid #1e293b;
 }
+ul{padding-left:18px;margin:6px 0;}
 @media(max-width:600px){
     input{width:100%}
     button{width:100%;margin-top:6px}
@@ -121,6 +122,19 @@ function renderAnalysis(p){
             Weekly: ${p.weekly_trend} |
             Monthly: ${p.monthly_trend}
         </p>
+
+        <h4>AI Probabilities & Trend</h4>
+        <table>
+            <tr><td>RF Probability</td><td>${safeNum(p.ai_probability_?.RF)}</td></tr>
+            <tr><td>LSTM Probability</td><td>${safeNum(p.ai_probability_?.LSTM)}</td></tr>
+            <tr><td>RF Trend</td><td>${p.ai_tr?.RF || "-"}</td></tr>
+            <tr><td>LSTM Trend</td><td>${p.ai_tr?.LSTM || "-"}</td></tr>
+        </table>
+
+        <h4>Reasons</h4>
+        <ul>
+            ${p.reason ? p.reason.map(r => `<li>${r}</li>`).join("") : ""}
+        </ul>
     </div>
 
     <div class="grid">
@@ -164,6 +178,11 @@ function renderTF(tf, d){
             <tr><td>Stop Loss</td><td>${safeNum(d.risk.stop_loss)}</td></tr>
             <tr><td>Target</td><td>${safeNum(d.risk.target)}</td></tr>
         </table>
+
+        <h4>Reasons</h4>
+        <ul>
+            ${d.reason ? d.reason.map(r => `<li>${r}</li>`).join("") : ""}
+        </ul>
     </div>
     `;
 }

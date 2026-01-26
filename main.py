@@ -3,11 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-import yfinance as yf
 import pandas as pd
 import numpy as np
 import os
 import warnings
+import requests
 warnings.filterwarnings("ignore")
 
 from sklearn.preprocessing import MinMaxScaler
@@ -48,11 +48,37 @@ MODEL_DIR = "lstm_models"
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 # ================= DATA FETCH =================
-def fetch_df(symbol, period="8y", interval="1d"):
-    df = yf.download(symbol, period=period, interval=interval, progress=False)
-    if df is None or df.empty or len(df) < 30:
+def fetch_yahoo_df(symbol, interval="1d", range_period="2y"):
+    """Fetch OHLCV data from Yahoo Finance with proper headers for NSE tickers"""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={interval}&range={range_period}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code != 200:
+            print(f"Failed to fetch {symbol}: HTTP {r.status_code}")
+            return None
+        data = r.json()
+        if "chart" not in data or "result" not in data["chart"] or data["chart"]["result"] is None:
+            print(f"No chart data for {symbol}")
+            return None
+
+        result = data["chart"]["result"][0]
+        ts = result["timestamp"]
+        ohlc = result["indicators"]["quote"][0]
+        df = pd.DataFrame({
+            "Open": ohlc["open"],
+            "High": ohlc["high"],
+            "Low": ohlc["low"],
+            "Close": ohlc["close"],
+            "Volume": ohlc["volume"]
+        }, index=pd.to_datetime(ts, unit='s'))
+        df = df.dropna()
+        return df if not df.empty else None
+    except Exception as e:
+        print(f"Failed to fetch {symbol}: {e}")
         return None
-    return df[["Open","High","Low","Close","Volume"]].dropna()
 
 # ================= INDICATORS =================
 def ema(s,n): return s.ewm(span=n,adjust=False).mean()
@@ -97,7 +123,7 @@ def rf_engine(df):
 
     X = df[["EMA20","EMA50","RSI","RET"]]
     y = df["Target"]
-    if len(X) < 2:  # Not enough data
+    if len(X) < 2:  
         return 50.0, "NEUTRAL"
 
     m = RandomForestClassifier(n_estimators=250, max_depth=6, random_state=42)
@@ -159,20 +185,14 @@ def prepare_analysis(df):
     stop_loss = round(price - atr_v*1.5,2)
     target = round(price + atr_v*3,2)
 
-    # Backtest equity
     ret = df["Close"].pct_change().fillna(0)
-    equity = (1 + ret).cumprod()
-    if isinstance(equity, pd.DataFrame):
-        equity = equity.iloc[:,0]
-    equity = equity.tolist()
+    equity = (1 + ret).cumprod().tolist()[-50:]
 
     reasons = []
     if rsi_val < 30: reasons.append("RSI Oversold")
     elif rsi_val > 70: reasons.append("RSI Overbought")
     if dow == "UPTREND": reasons.append("Dow Theory Uptrend")
-    elif dow == "DOWNTREND": reasons.append("Dow Theory Downtrend")
     if wave == "Impulse": reasons.append("Wave Phase Impulse")
-    elif wave == "Correction": reasons.append("Wave Phase Correction")
 
     return {
         "Price": round(price,2),
@@ -192,14 +212,14 @@ def prepare_analysis(df):
         },
         "risk": {"stop_loss": stop_loss, "target": target},
         "reason": reasons,
-        "backtest_equity_curve": equity[-50:]
+        "backtest_equity_curve": equity
     }
 
 # ================= CORE ENGINE =================
 def engine(symbol):
-    df1d = fetch_df(symbol,period="8y",interval="1d")
-    df4h = fetch_df(symbol,period="120d",interval="4h")
-    df1h = fetch_df(symbol,period="60d",interval="60m")
+    df1d = fetch_yahoo_df(symbol, interval="1d", range_period="2y")
+    df4h = fetch_yahoo_df(symbol, interval="4h", range_period="120d")
+    df1h = fetch_yahoo_df(symbol, interval="60m", range_period="60d")
     if df1d is None: return None
 
     analysis = {
@@ -213,11 +233,10 @@ def engine(symbol):
     monthly_trend = regression_trend(df1d["Close"].resample("M").last())
 
     rf_p, rf_t = rf_engine(df1d)
-    lstm_p, lstm_t = lstm_engine(symbol,df1d)
+    lstm_p, lstm_t = lstm_engine(symbol, df1d)
     ai_prob={"RF": rf_p,"LSTM": lstm_p}
     ai_tr={"RF": rf_t,"LSTM": lstm_t}
 
-    # Confidence score
     score = 50
     for tf in ["1D","4H","1H"]:
         if analysis.get(tf):
@@ -277,7 +296,6 @@ def scanner():
 
 # ================= STATIC =================
 app.mount("/static", StaticFiles(directory="static"), name="static")
-
 @app.get("/")
 def root():
     return FileResponse("static/index.html")
