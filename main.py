@@ -13,7 +13,7 @@ warnings.filterwarnings("ignore")
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestClassifier
-from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.models import Sequential, load_model, model_from_json
 from tensorflow.keras.layers import LSTM, Dense
 
 # ================= APP INIT =================
@@ -49,21 +49,14 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 
 # ================= DATA FETCH =================
 def fetch_yahoo_df(symbol, interval="1d", range_period="2y"):
-    """Fetch OHLCV data from Yahoo Finance with proper headers for NSE tickers"""
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={interval}&range={range_period}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
         r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code != 200:
-            print(f"Failed to fetch {symbol}: HTTP {r.status_code}")
-            return None
+        if r.status_code != 200: return None
         data = r.json()
         if "chart" not in data or "result" not in data["chart"] or data["chart"]["result"] is None:
-            print(f"No chart data for {symbol}")
             return None
-
         result = data["chart"]["result"][0]
         ts = result["timestamp"]
         ohlc = result["indicators"]["quote"][0]
@@ -76,8 +69,7 @@ def fetch_yahoo_df(symbol, interval="1d", range_period="2y"):
         }, index=pd.to_datetime(ts, unit='s'))
         df = df.dropna()
         return df if not df.empty else None
-    except Exception as e:
-        print(f"Failed to fetch {symbol}: {e}")
+    except:
         return None
 
 # ================= INDICATORS =================
@@ -120,12 +112,9 @@ def rf_engine(df):
     df["RET"] = df["Close"].pct_change()
     df["Target"] = (df["Close"].shift(-5) < df["Close"]).astype(int)
     df.dropna(inplace=True)
-
     X = df[["EMA20","EMA50","RSI","RET"]]
     y = df["Target"]
-    if len(X) < 2:  
-        return 50.0, "NEUTRAL"
-
+    if len(X) < 2: return 50.0, "NEUTRAL"
     m = RandomForestClassifier(n_estimators=250, max_depth=6, random_state=42)
     m.fit(X[:-1],y[:-1])
     p = float(m.predict_proba(X.iloc[[-1]])[0][1]*100)
@@ -146,6 +135,7 @@ def lstm_engine(symbol, df):
     X, y = np.array(X), np.array(y)
     X = X.reshape((X.shape[0], X.shape[1],1))
     model_path = f"{MODEL_DIR}/{symbol.replace('.','_')}.keras"
+
     if not os.path.exists(model_path):
         model = Sequential([LSTM(64,return_sequences=True,input_shape=(60,1)),
                             LSTM(32),Dense(1)])
@@ -153,7 +143,18 @@ def lstm_engine(symbol, df):
         model.fit(X,y,epochs=5,batch_size=32,verbose=0)
         model.save(model_path)
     else:
-        model = load_model(model_path,compile=False)
+        try:
+            model = load_model(model_path, compile=False)
+        except TypeError:
+            # Fix deserialization issue by removing quantization_config
+            import h5py, json
+            with h5py.File(model_path,'r') as f:
+                config = json.loads(f.attrs['model_config'].decode('utf-8'))
+            for layer in config['config']['layers']:
+                layer['config'].pop('quantization_config', None)
+            model = model_from_json(json.dumps(config))
+            model.load_weights(model_path)
+
     pred = model.predict(X[-1:].reshape(1,60,1),verbose=0)
     prediction = float(scaler.inverse_transform(pred)[0][0])
     delta = prediction - float(close.iloc[-1])
@@ -165,7 +166,6 @@ def lstm_engine(symbol, df):
 def prepare_analysis(df):
     if df is None or df.empty: 
         return None
-
     close = df["Close"]
     price = float(close.iloc[-1])
     volume = int(df["Volume"].iloc[-1])
