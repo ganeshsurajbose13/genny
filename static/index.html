@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Market AI Scanner</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<link rel="icon" href="data:,">
+
+<style>
+body{
+    font-family: Arial, Helvetica, sans-serif;
+    background:#0f172a;
+    color:#e5e7eb;
+    margin:0;
+    padding:14px;
+}
+h1,h2,h3{color:#38bdf8;margin:6px 0}
+input,button{
+    padding:10px;
+    font-size:14px;
+}
+input{width:180px}
+button{
+    cursor:pointer;
+    background:#2563eb;
+    border:none;
+    color:white;
+    border-radius:6px;
+}
+.card{
+    background:#020617;
+    padding:14px;
+    border-radius:10px;
+    margin-bottom:14px;
+}
+.grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+    gap:12px;
+}
+.badge{
+    padding:4px 10px;
+    border-radius:6px;
+    font-size:12px;
+}
+.buy{background:#16a34a}
+.sell{background:#dc2626}
+.hold{background:#6b7280}
+table{
+    width:100%;
+    border-collapse:collapse;
+}
+td{
+    padding:6px;
+    border-bottom:1px solid #1e293b;
+}
+</style>
+</head>
+
+<body>
+
+<h1>📈 Market AI Scanner</h1>
+
+<div class="card">
+    <input id="symbol" placeholder="RELIANCE.NS">
+    <button onclick="analyze()">Analyze</button>
+    <button onclick="loadScanner()">Scanner</button>
+</div>
+
+<div id="result"></div>
+
+<script>
+const API = ""; // ✅ IMPORTANT FOR RENDER
+
+/* ---------- helpers ---------- */
+function safeNum(v, d=2){
+    if(v === undefined || v === null) return "-";
+    const n = Number(v);
+    if(isNaN(n)) return "-";
+    return n.toFixed(d);
+}
+
+function badgeCls(s){
+    if(!s) return "hold";
+    s = s.toUpperCase();
+    if(s.includes("BUY")) return "buy";
+    if(s.includes("SELL")) return "sell";
+    return "hold";
+}
+
+/* ---------- ENTER KEY ---------- */
+document.getElementById("symbol").addEventListener("keypress", function(e){
+    if(e.key === "Enter") analyze();
+});
+
+/* ---------- ANALYZE ---------- */
+async function analyze(sym){
+
+    let symbol = (sym || document.getElementById("symbol").value).trim().toUpperCase();
+
+    if(!symbol){
+        alert("Enter symbol");
+        return;
+    }
+
+    if(!symbol.includes(".")){
+        symbol += ".NS";
+    }
+
+    try{
+        const res = await fetch(`${API}/analyze?symbol=${symbol}`);
+        if(!res.ok) return alert("API Error");
+
+        const d = await res.json();
+
+        if(d.error){
+            alert(d.error);
+            return;
+        }
+
+        render(d);
+
+    }catch(e){
+        alert("Connection Error");
+    }
+}
+
+/* ---------- RENDER ---------- */
+function render(d){
+
+    const rr = (d.risk && d.risk.target && d.risk.stop_loss)
+        ? ((d.risk.target - d.price) / (d.price - d.risk.stop_loss)).toFixed(2)
+        : "-";
+
+    let html = `
+    <div class="card">
+        <h2>${d.symbol}</h2>
+        <span class="badge ${badgeCls(d.signal)}">${d.signal}</span>
+
+        <h3>Trade Info</h3>
+        <table>
+            <tr><td>Entry Quality</td><td>${d.entry_quality}</td></tr>
+            <tr><td>Score</td><td>${d.score}</td></tr>
+        </table>
+
+        <h3>Timeframes</h3>
+        <table>
+            <tr><td>1H</td><td>${d.timeframes["1H"]}</td></tr>
+            <tr><td>4H</td><td>${d.timeframes["4H"]}</td></tr>
+            <tr><td>Daily</td><td>${d.timeframes["DAILY"]}</td></tr>
+            <tr><td>Weekly</td><td>${d.timeframes["WEEKLY"]}</td></tr>
+            <tr><td>Monthly</td><td>${d.timeframes["MONTHLY"]}</td></tr>
+        </table>
+
+        <h3>Market Signals</h3>
+        <table>
+            <tr><td>Breakout</td><td>${d.breakout}</td></tr>
+            <tr><td>Divergence</td><td>${d.divergence}</td></tr>
+            <tr><td>Volume Strong</td><td>${d.volume_strong ? "YES" : "NO"}</td></tr>
+        </table>
+
+        <h3>Indicators</h3>
+        <table>
+            <tr><td>Price</td><td>${safeNum(d.price)}</td></tr>
+            <tr><td>RSI</td><td>${safeNum(d.rsi)}</td></tr>
+            <tr><td>ML Probability</td><td>${safeNum(d.ml_probability)}%</td></tr>
+        </table>
+
+        <h3>Risk</h3>
+        <table>
+            <tr><td>Stop Loss</td><td>${safeNum(d.risk.stop_loss)}</td></tr>
+            <tr><td>Target</td><td>${safeNum(d.risk.target)}</td></tr>
+            <tr><td>Risk Reward</td><td>${rr}</td></tr>
+        </table>
+
+        <h3>Backtest</h3>
+        <table>
+            <tr><td>Win Rate</td><td>${safeNum(d.backtest.win_rate)}%</td></tr>
+            <tr><td>Trades</td><td>${d.backtest.trades}</td></tr>
+        </table>
+    </div>
+    `;
+
+    document.getElementById("result").innerHTML = html;
+}
+
+/* ---------- SCANNER ---------- */
+async function loadScanner(){
+    try{
+        const res = await fetch(`${API}/scanner`);
+        const data = await res.json();
+
+        let html = `<div class="grid">`;
+
+        [...data.TOP_BUY, ...data.TOP_SELL].forEach(x=>{
+            html += `
+            <div class="card">
+                <h3>${x.symbol}</h3>
+                <span class="badge ${badgeCls(x.signal)}">${x.signal}</span>
+                <p>Score: ${safeNum(x.score,1)}</p>
+                <button onclick="analyze('${x.symbol}')">Analyze</button>
+            </div>`;
+        });
+
+        html += "</div>";
+        document.getElementById("result").innerHTML = html;
+
+    }catch(e){
+        alert("Scanner Error");
+    }
+}
+</script>
+
+</body>
+</html>
