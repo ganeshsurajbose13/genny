@@ -5,6 +5,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
+import time
 
 app = FastAPI()
 
@@ -14,7 +15,50 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 def home():
     return FileResponse("static/index.html")
 
-SYMBOLS = ["RELIANCE.NS","HDFCBANK.NS","TCS.NS","INFY.NS","ICICIBANK.NS"]
+# ==============================
+# STOCK LIST (EXPANDED)
+# ==============================
+SYMBOLS = sorted(list(set([
+    "RELIANCE.NS","HDFCBANK.NS","BHARTIARTL.NS","TCS.NS","ICICIBANK.NS",
+    "SBIN.NS","INFY.NS","BAJFINANCE.NS","ITC.NS","HINDUNILVR.NS",
+    "LT.NS","MARUTI.NS","AXISBANK.NS","TECHM.NS","SUNPHARMA.NS",
+    "NESTLEIND.NS","TITAN.NS","ULTRACEMCO.NS","WIPRO.NS","POWERGRID.NS",
+    "HCLTECH.NS","ONGC.NS","TATACONSUM.NS","ADANIENT.NS","BPCL.NS",
+    "COALINDIA.NS","EICHERMOT.NS","DIVISLAB.NS","JSWSTEEL.NS","NTPC.NS",
+    "GRASIM.NS","BRITANNIA.NS","CIPLA.NS","SHREECEM.NS","HDFCLIFE.NS",
+    "ICICIPRULI.NS","UPL.NS","SBILIFE.NS","ICICIGI.NS","BAJAJFINSV.NS",
+    "ADANIGREEN.NS","INDUSINDBK.NS","PIDILITIND.NS","ADANIPORTS.NS",
+    "GAIL.NS","M&M.NS","ZEEL.NS","DLF.NS","TATAPOWER.NS","VEDL.NS",
+    "COFORGE.NS","BEL.NS","TATAELXSI.NS","COLPAL.NS","HINDALCO.NS",
+    "CERA.NS","AUROPHARMA.NS","MUTHOOTFIN.NS","TORNTPOWER.NS",
+    "BANDHANBNK.NS","LUPIN.NS","SRF.NS","NMDC.NS","AMBUJACEM.NS",
+    "HAL.NS","SIEMENS.NS","INDIGO.NS","M&MFIN.NS","BOSCHLTD.NS",
+    "PAGEIND.NS","BHEL.NS","TATASTEEL.NS"
+])))
+
+# ==============================
+# SAFE DATA FETCH
+# ==============================
+def get_tf(symbol, interval, period):
+    try:
+        df = yf.download(symbol, interval=interval, period=period, progress=False)
+
+        if df is None or df.empty:
+            return None
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df = df.dropna()
+
+        if df.empty:
+            return None
+
+        return indicators(df)
+
+    except Exception as e:
+        print(f"Error {symbol}: {e}")
+        return None
 
 
 # ==============================
@@ -24,12 +68,14 @@ def indicators(df):
     df["EMA5"] = df["Close"].ewm(span=5).mean()
     df["EMA20"] = df["Close"].ewm(span=20).mean()
 
+    # RSI
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / (loss + 1e-9)
     df["RSI"] = 100 - (100 / (1 + rs))
 
+    # ATR
     df["TR"] = np.maximum(
         df["High"] - df["Low"],
         np.maximum(
@@ -38,6 +84,13 @@ def indicators(df):
         )
     )
     df["ATR"] = df["TR"].rolling(14).mean()
+
+    # MACD
+    df["EMA12"] = df["Close"].ewm(span=12).mean()
+    df["EMA26"] = df["Close"].ewm(span=26).mean()
+    df["MACD"] = df["EMA12"] - df["EMA26"]
+    df["MACD_SIGNAL"] = df["MACD"].ewm(span=9).mean()
+    df["MACD_HIST"] = df["MACD"] - df["MACD_SIGNAL"]
 
     df["Vol_Avg"] = df["Volume"].rolling(20).mean()
 
@@ -62,24 +115,21 @@ def dow_trend(df):
 
 
 # ==============================
-# RSI DIVERGENCE
+# MACD SIGNAL
 # ==============================
-def rsi_divergence(df):
-    if len(df) < 10:
-        return "NONE"
-
-    if df["Close"].iloc[-1] > df["Close"].iloc[-5] and df["RSI"].iloc[-1] < df["RSI"].iloc[-5]:
-        return "BEARISH"
-    if df["Close"].iloc[-1] < df["Close"].iloc[-5] and df["RSI"].iloc[-1] > df["RSI"].iloc[-5]:
+def macd_signal(df):
+    if df["MACD"].iloc[-1] > df["MACD_SIGNAL"].iloc[-1]:
         return "BULLISH"
-    return "NONE"
+    return "BEARISH"
 
 
 # ==============================
 # SUPPORT / RESISTANCE
 # ==============================
 def support_resistance(df):
-    return float(df["Low"].rolling(20).min().iloc[-1]), float(df["High"].rolling(20).max().iloc[-1])
+    support = df["Low"].rolling(50).min().iloc[-1]
+    resistance = df["High"].rolling(50).max().iloc[-1]
+    return float(support), float(resistance)
 
 
 # ==============================
@@ -97,15 +147,6 @@ def breakout(df):
 
 
 # ==============================
-# GMMA
-# ==============================
-def gmma(df):
-    short = df["Close"].ewm(span=5).mean()
-    long = df["Close"].ewm(span=30).mean()
-    return "BULLISH" if short.iloc[-1] > long.iloc[-1] else "BEARISH"
-
-
-# ==============================
 # ML MODEL
 # ==============================
 def train_model(df):
@@ -116,7 +157,7 @@ def train_model(df):
 
     df["target"] = (df["Close"].shift(-1) > df["Close"]).astype(int)
 
-    X = df[["RSI","EMA5","EMA20","ATR"]]
+    X = df[["RSI","EMA5","EMA20","ATR","MACD"]]
     y = df["target"]
 
     model = RandomForestClassifier(n_estimators=120, max_depth=5, random_state=42)
@@ -124,56 +165,6 @@ def train_model(df):
 
     prob = model.predict_proba(X.iloc[-1:])[0][1]
     return float(prob * 100)
-
-
-# ==============================
-# BACKTEST
-# ==============================
-def backtest(df):
-    wins, total = 0, 0
-    for i in range(20, len(df)-1):
-        if df["RSI"].iloc[i] < 30:
-            total += 1
-            if df["Close"].iloc[i+1] > df["Close"].iloc[i]:
-                wins += 1
-
-    return {
-        "win_rate": round((wins/total)*100,2) if total else 0,
-        "trades": total
-    }
-
-
-# ==============================
-# MULTI TIMEFRAME
-# ==============================
-def get_tf(symbol, interval, period):
-    df = yf.download(symbol, interval=interval, period=period)
-
-    if df.empty:
-        return None
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    return indicators(df)
-
-
-# ==============================
-# ENTRY QUALITY
-# ==============================
-def entry_quality(tf):
-    up = tf.count("UPTREND")
-    down = tf.count("DOWNTREND")
-
-    if up >= 4:
-        return "HIGH_PROB_BUY"
-    elif down >= 4:
-        return "HIGH_PROB_SELL"
-    elif up >= 3:
-        return "MEDIUM_BUY"
-    elif down >= 3:
-        return "MEDIUM_SELL"
-    return "LOW_QUALITY"
 
 
 # ==============================
@@ -205,41 +196,35 @@ def analyze(symbol: str):
 
     tf_trends = [trend_1h, trend_4h, trend_d, trend_w, trend_m]
 
-    div = rsi_divergence(df_d)
-    gmma_signal = gmma(df_d)
+    macd_sig = macd_signal(df_d)
     prob = train_model(df_d)
     breakout_signal = breakout(df_d)
 
     volume = latest["Volume"] > latest["Vol_Avg"]
-    entry = entry_quality(tf_trends)
 
     # ======================
-    # SCORING
+    # SCORING (UPGRADED)
     # ======================
     score = 0
 
     score += (tf_trends.count("UPTREND") - tf_trends.count("DOWNTREND")) * 12
-
-    score += 10 if gmma_signal == "BULLISH" else -10
+    score += 12 if macd_sig == "BULLISH" else -12
 
     if breakout_signal == "BREAKOUT_UP":
         score += 15
     elif breakout_signal == "BREAKOUT_DOWN":
         score -= 15
 
-    if div == "BULLISH": score += 15
-    if div == "BEARISH": score -= 15
-
     if rsi < 30: score += 10
     elif rsi > 70: score -= 10
 
-    if volume: score += 5
+    if volume: score += 6
 
-    if prob > 65: score += 8
-    elif prob < 35: score -= 8
+    if prob > 65: score += 10
+    elif prob < 35: score -= 10
 
     # ======================
-    # FINAL SIGNAL
+    # SIGNAL
     # ======================
     if score > 45:
         signal = "STRONG BUY"
@@ -253,36 +238,29 @@ def analyze(symbol: str):
         signal = "HOLD"
 
     # ======================
-    # TRADE FILTER
-    # ======================
-    if entry == "LOW_QUALITY":
-        signal = "HOLD"
-
-    # ======================
-    # FIXED STOP LOSS
+    # SMART SL / TARGET
     # ======================
     support, resistance = support_resistance(df_d)
 
-    if signal in ["BUY", "STRONG BUY"]:
-        stop_loss = max(price - (1.2 * atr), support)
-        target = price + (price - stop_loss) * 2
+    if signal in ["BUY","STRONG BUY"]:
+        stop_loss = support
+        target = resistance
 
-    elif signal in ["SELL", "STRONG SELL"]:
-        stop_loss = min(price + (1.2 * atr), resistance)
-        target = price - (stop_loss - price) * 2
+    elif signal in ["SELL","STRONG SELL"]:
+        stop_loss = resistance
+        target = support
 
     else:
         stop_loss = price - atr
         target = price + atr
 
-    stop_loss = float(round(stop_loss, 2))
-    target = float(round(target, 2))
-
     return {
         "symbol": symbol,
         "signal": signal,
-        "entry_quality": entry,
         "score": score,
+        "price": price,
+        "rsi": rsi,
+        "ml_probability": prob,
         "timeframes": {
             "1H": trend_1h,
             "4H": trend_4h,
@@ -291,21 +269,17 @@ def analyze(symbol: str):
             "MONTHLY": trend_m
         },
         "breakout": breakout_signal,
-        "divergence": div,
-        "price": price,
-        "rsi": rsi,
-        "ml_probability": prob,
+        "macd": macd_sig,
         "volume_strong": bool(volume),
         "risk": {
-            "stop_loss": stop_loss,
-            "target": target
-        },
-        "backtest": backtest(df_d)
+            "stop_loss": round(stop_loss,2),
+            "target": round(target,2)
+        }
     }
 
 
 # ==============================
-# SCANNER
+# SCANNER (FAST)
 # ==============================
 @app.get("/scanner")
 def scanner():
@@ -313,16 +287,12 @@ def scanner():
 
     for sym in SYMBOLS:
         try:
-            df = yf.download(sym, period="3mo")
+            df = yf.download(sym, period="3mo", progress=False)
 
             if df.empty:
                 continue
 
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-
             df = indicators(df)
-
             rsi = float(df["RSI"].iloc[-1])
 
             signal = "BUY" if rsi < 35 else "SELL" if rsi > 65 else "HOLD"
@@ -332,6 +302,8 @@ def scanner():
                 "signal": signal,
                 "score": float(100 - abs(50 - rsi))
             })
+
+            time.sleep(0.2)
 
         except:
             continue
