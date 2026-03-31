@@ -16,7 +16,7 @@ def home():
     return FileResponse("static/index.html")
 
 # ==============================
-# STOCK LIST (EXPANDED)
+# STOCK LIST
 # ==============================
 SYMBOLS = sorted(list(set([
     "RELIANCE.NS","HDFCBANK.NS","BHARTIARTL.NS","TCS.NS","ICICIBANK.NS",
@@ -37,7 +37,7 @@ SYMBOLS = sorted(list(set([
 ])))
 
 # ==============================
-# SAFE DATA FETCH
+# SAFE FETCH
 # ==============================
 def get_tf(symbol, interval, period):
     try:
@@ -51,7 +51,7 @@ def get_tf(symbol, interval, period):
 
         df = df.dropna()
 
-        if df.empty:
+        if len(df) < 50:
             return None
 
         return indicators(df)
@@ -70,8 +70,8 @@ def indicators(df):
 
     # RSI
     delta = df["Close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
     rs = gain / (loss + 1e-9)
     df["RSI"] = 100 - (100 / (1 + rs))
 
@@ -90,7 +90,9 @@ def indicators(df):
     df["EMA26"] = df["Close"].ewm(span=26).mean()
     df["MACD"] = df["EMA12"] - df["EMA26"]
     df["MACD_SIGNAL"] = df["MACD"].ewm(span=9).mean()
-    df["MACD_HIST"] = df["MACD"] - df["MACD_SIGNAL"]
+
+    # VWAP ✅ NEW
+    df["VWAP"] = (df["Close"] * df["Volume"]).cumsum() / df["Volume"].cumsum()
 
     df["Vol_Avg"] = df["Volume"].rolling(20).mean()
 
@@ -115,33 +117,26 @@ def dow_trend(df):
 
 
 # ==============================
-# MACD SIGNAL
+# SIGNAL HELPERS
 # ==============================
 def macd_signal(df):
-    if df["MACD"].iloc[-1] > df["MACD_SIGNAL"].iloc[-1]:
-        return "BULLISH"
-    return "BEARISH"
+    return "BULLISH" if df["MACD"].iloc[-1] > df["MACD_SIGNAL"].iloc[-1] else "BEARISH"
+
+def vwap_signal(df):
+    return "BULLISH" if df["Close"].iloc[-1] > df["VWAP"].iloc[-1] else "BEARISH"
 
 
 # ==============================
-# SUPPORT / RESISTANCE
-# ==============================
-def support_resistance(df):
-    support = df["Low"].rolling(50).min().iloc[-1]
-    resistance = df["High"].rolling(50).max().iloc[-1]
-    return float(support), float(resistance)
-
-
-# ==============================
-# BREAKOUT
+# REAL BREAKOUT (FIXED)
 # ==============================
 def breakout(df):
-    support, resistance = support_resistance(df)
+    recent_high = df["High"].rolling(20).max().iloc[-2]
+    recent_low = df["Low"].rolling(20).min().iloc[-2]
     price = df["Close"].iloc[-1]
 
-    if price > resistance:
+    if price > recent_high:
         return "BREAKOUT_UP"
-    elif price < support:
+    elif price < recent_low:
         return "BREAKOUT_DOWN"
     return "NO_BREAKOUT"
 
@@ -163,8 +158,7 @@ def train_model(df):
     model = RandomForestClassifier(n_estimators=120, max_depth=5, random_state=42)
     model.fit(X[:-1], y[:-1])
 
-    prob = model.predict_proba(X.iloc[-1:])[0][1]
-    return float(prob * 100)
+    return float(model.predict_proba(X.iloc[-1:])[0][1] * 100)
 
 
 # ==============================
@@ -197,23 +191,25 @@ def analyze(symbol: str):
     tf_trends = [trend_1h, trend_4h, trend_d, trend_w, trend_m]
 
     macd_sig = macd_signal(df_d)
+    vwap_sig = vwap_signal(df_d)
     prob = train_model(df_d)
     breakout_signal = breakout(df_d)
 
     volume = latest["Volume"] > latest["Vol_Avg"]
 
     # ======================
-    # SCORING (UPGRADED)
+    # SCORING (IMPROVED)
     # ======================
     score = 0
 
-    score += (tf_trends.count("UPTREND") - tf_trends.count("DOWNTREND")) * 12
+    score += (tf_trends.count("UPTREND") - tf_trends.count("DOWNTREND")) * 10
     score += 12 if macd_sig == "BULLISH" else -12
+    score += 8 if vwap_sig == "BULLISH" else -8
 
     if breakout_signal == "BREAKOUT_UP":
-        score += 15
+        score += 20
     elif breakout_signal == "BREAKOUT_DOWN":
-        score -= 15
+        score -= 20
 
     if rsi < 30: score += 10
     elif rsi > 70: score -= 10
@@ -237,18 +233,20 @@ def analyze(symbol: str):
     else:
         signal = "HOLD"
 
-    # ======================
-    # SMART SL / TARGET
-    # ======================
-    support, resistance = support_resistance(df_d)
+    # ✅ RSI PROTECTION FIX
+    if rsi < 32 and signal in ["SELL","STRONG SELL"]:
+        signal = "HOLD"
 
+    # ======================
+    # CORRECT RISK LOGIC
+    # ======================
     if signal in ["BUY","STRONG BUY"]:
-        stop_loss = support
-        target = resistance
+        stop_loss = price - 1.5 * atr
+        target = price + 2.5 * atr
 
     elif signal in ["SELL","STRONG SELL"]:
-        stop_loss = resistance
-        target = support
+        stop_loss = price + 1.5 * atr
+        target = price - 2.5 * atr
 
     else:
         stop_loss = price - atr
@@ -257,9 +255,9 @@ def analyze(symbol: str):
     return {
         "symbol": symbol,
         "signal": signal,
-        "score": score,
+        "score": round(score,2),
         "price": price,
-        "rsi": rsi,
+        "rsi": round(rsi,2),
         "ml_probability": prob,
         "timeframes": {
             "1H": trend_1h,
@@ -270,6 +268,7 @@ def analyze(symbol: str):
         },
         "breakout": breakout_signal,
         "macd": macd_sig,
+        "vwap": vwap_sig,
         "volume_strong": bool(volume),
         "risk": {
             "stop_loss": round(stop_loss,2),
@@ -279,13 +278,13 @@ def analyze(symbol: str):
 
 
 # ==============================
-# SCANNER (FAST)
+# SCANNER
 # ==============================
 @app.get("/scanner")
 def scanner():
     results = []
 
-    for sym in SYMBOLS:
+    for sym in SYMBOLS[:40]:
         try:
             df = yf.download(sym, period="3mo", progress=False)
 
