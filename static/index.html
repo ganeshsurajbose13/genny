@@ -65,90 +65,6 @@ td{
     font-size:22px;
     font-weight:bold;
 }
-
-</style>
-</head>
-
-<body>
-
-<h1>🚀 AI Trading Dashboard</h1>
-
-<div class="card">
-    <input id="symbol" placeholder="RELIANCE">
-    <button onclick="analyze()">Analyze</button>
-    <button onclick="loadScanner()">Scanner</button>
-</div>
-
-<div id="result"></div>
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>AI Trading Dashboard</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-
-<style>
-body{
-    font-family: Arial;
-    background:#0f172a;
-    color:#e5e7eb;
-    margin:0;
-    padding:14px;
-}
-
-h1{color:#38bdf8}
-
-input,button{
-    padding:10px;
-    border-radius:6px;
-    border:none;
-}
-
-button{
-    background:#2563eb;
-    color:white;
-    cursor:pointer;
-}
-
-.card{
-    background:#020617;
-    padding:14px;
-    border-radius:10px;
-    margin-bottom:14px;
-}
-
-.grid{
-    display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
-    gap:12px;
-}
-
-.badge{
-    padding:5px 10px;
-    border-radius:6px;
-    font-weight:bold;
-}
-
-.buy{background:#16a34a}
-.sell{background:#dc2626}
-.hold{background:#6b7280}
-
-table{
-    width:100%;
-    border-collapse:collapse;
-}
-
-td{
-    padding:6px;
-    border-bottom:1px solid #1e293b;
-}
-
-.big{
-    font-size:22px;
-    font-weight:bold;
-}
-
 </style>
 </head>
 
@@ -170,7 +86,8 @@ const API = "";
 /* ---------- helpers ---------- */
 function safe(v){
     if(v === undefined || v === null) return "-";
-    return Number(v).toFixed(2);
+    const n = Number(v);
+    return isNaN(n) ? "-" : n.toFixed(2);
 }
 
 function badgeCls(s){
@@ -218,10 +135,6 @@ async function analyze(sym){
 /* ---------- RENDER ---------- */
 function render(d){
 
-    const rr = (d.risk?.target && d.risk?.stop_loss)
-        ? ((d.risk.target - d.price) / (d.price - d.risk.stop_loss)).toFixed(2)
-        : "-";
-
     let html = `
     <div class="card">
         <h2>${d.symbol}</h2>
@@ -236,7 +149,7 @@ function render(d){
             <table>
                 <tr><td>Score</td><td>${safe(d.score)}</td></tr>
                 <tr><td>RSI</td><td>${safe(d.rsi)}</td></tr>
-                <tr><td>AI Probability</td><td>${safe(d.ml_probability)}%</td></tr>
+                <tr><td>ML Probability</td><td>${safe(d.ml_probability)}%</td></tr>
             </table>
         </div>
 
@@ -262,11 +175,12 @@ function render(d){
         </div>
 
         <div class="card">
-            <h3>🎯 Risk</h3>
+            <h3>🎯 Risk Management</h3>
             <table>
-                <tr><td>Stop Loss</td><td>${safe(d.risk?.stop_loss)}</td></tr>
-                <tr><td>Target</td><td>${safe(d.risk?.target)}</td></tr>
-                <tr><td>R:R</td><td>${rr}</td></tr>
+                <tr><td>Stop Loss (Small)</td><td>${safe(d.risk?.stop_loss_small)}</td></tr>
+                <tr><td>Stop Loss (Big)</td><td>${safe(d.risk?.stop_loss_big)}</td></tr>
+                <tr><td>Target (Small)</td><td>${safe(d.risk?.target_small)}</td></tr>
+                <tr><td>Target (Big)</td><td>${safe(d.risk?.target_big)}</td></tr>
             </table>
         </div>
 
@@ -312,7 +226,5 @@ async function loadScanner(){
 }
 </script>
 
-</body>
-</html>
 </body>
 </html>
