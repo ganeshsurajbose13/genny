@@ -7,49 +7,73 @@
 
 <style>
 body{
-    font-family: Arial;
+    font-family: Arial, sans-serif;
     background:#0f172a;
     color:#e5e7eb;
     margin:0;
-    padding:14px;
+    padding:16px;
 }
 
-h1{color:#38bdf8}
+h1{
+    color:#38bdf8;
+    margin-bottom:20px;
+}
 
-input,button{
+input, button{
     padding:10px;
-    border-radius:6px;
     border:none;
+    border-radius:8px;
+    font-size:14px;
+}
+
+input{
+    width:220px;
 }
 
 button{
     background:#2563eb;
     color:white;
     cursor:pointer;
+    margin-left:6px;
+}
+
+button:hover{
+    background:#1d4ed8;
 }
 
 .card{
     background:#020617;
-    padding:14px;
-    border-radius:10px;
-    margin-bottom:14px;
+    border-radius:12px;
+    padding:16px;
+    margin-bottom:16px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.2);
 }
 
 .grid{
     display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
-    gap:12px;
+    grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+    gap:14px;
 }
 
 .badge{
-    padding:5px 10px;
-    border-radius:6px;
+    padding:6px 12px;
+    border-radius:8px;
     font-weight:bold;
+    display:inline-block;
+    margin-top:10px;
 }
 
-.buy{background:#16a34a}
-.sell{background:#dc2626}
-.hold{background:#6b7280}
+.buy{
+    background:#16a34a;
+}
+
+.sell{
+    background:#dc2626;
+}
+
+.hold{
+    background:#64748b;
+}
 
 table{
     width:100%;
@@ -57,13 +81,21 @@ table{
 }
 
 td{
-    padding:6px;
+    padding:8px;
     border-bottom:1px solid #1e293b;
+    font-size:14px;
 }
 
 .big{
-    font-size:22px;
+    font-size:28px;
     font-weight:bold;
+    margin-top:8px;
+}
+
+.section-title{
+    margin-top:10px;
+    margin-bottom:10px;
+    color:#38bdf8;
 }
 </style>
 </head>
@@ -73,47 +105,68 @@ td{
 <h1>🚀 AI Trading Dashboard</h1>
 
 <div class="card">
-    <input id="symbol" placeholder="RELIANCE">
+    <input id="symbol" placeholder="Enter Symbol (RELIANCE)">
     <button onclick="analyze()">Analyze</button>
     <button onclick="loadScanner()">Scanner</button>
+    <button onclick="loadIndexes()">Indexes</button>
 </div>
 
 <div id="result"></div>
 
 <script>
+
 const API = "";
 
-/* ---------- helpers ---------- */
+
+/* =====================================================
+HELPERS
+===================================================== */
+
 function safe(v){
     if(v === undefined || v === null) return "-";
-    const n = Number(v);
+    let n = Number(v);
     return isNaN(n) ? "-" : n.toFixed(2);
 }
 
-function badgeCls(s){
-    if(!s) return "hold";
-    s = s.toUpperCase();
-    if(s.includes("BUY")) return "buy";
-    if(s.includes("SELL")) return "sell";
+function badgeCls(signal){
+    if(!signal) return "hold";
+
+    signal = signal.toUpperCase();
+
+    if(signal.includes("BUY") || signal.includes("BULLISH")){
+        return "buy";
+    }
+
+    if(signal.includes("SELL") || signal.includes("BEARISH")){
+        return "sell";
+    }
+
     return "hold";
 }
 
-/* ---------- ENTER ---------- */
-document.getElementById("symbol").addEventListener("keypress", e=>{
-    if(e.key === "Enter") analyze();
+document.getElementById("symbol").addEventListener("keypress", function(e){
+    if(e.key === "Enter"){
+        analyze();
+    }
 });
 
-/* ---------- ANALYZE ---------- */
-async function analyze(sym){
 
-    let symbol = (sym || document.getElementById("symbol").value).trim().toUpperCase();
+/* =====================================================
+ANALYZE
+===================================================== */
+
+async function analyze(customSymbol){
+
+    let symbol = customSymbol || document.getElementById("symbol").value.trim().toUpperCase();
 
     if(!symbol){
-        alert("Enter symbol");
+        alert("Please enter stock symbol");
         return;
     }
 
-    if(!symbol.includes(".")) symbol += ".NS";
+    if(!symbol.includes(".") && !symbol.startsWith("^")){
+        symbol += ".NS";
+    }
 
     try{
         const res = await fetch(`${API}/analyze?symbol=${symbol}`);
@@ -124,28 +177,33 @@ async function analyze(sym){
             return;
         }
 
-        render(d);
+        renderAnalyze(d);
 
-    }catch(e){
-        console.error(e);
-        alert("Server not responding");
+    }catch(err){
+        console.error(err);
+        alert("Server Error");
     }
 }
 
-/* ---------- RENDER ---------- */
-function render(d){
+
+/* =====================================================
+RENDER ANALYZE
+===================================================== */
+
+function renderAnalyze(d){
 
     let html = `
+
     <div class="card">
         <h2>${d.symbol}</h2>
-        <div class="big">${safe(d.price)}</div>
+        <div class="big">₹ ${safe(d.price)}</div>
         <span class="badge ${badgeCls(d.signal)}">${d.signal}</span>
     </div>
 
     <div class="grid">
 
         <div class="card">
-            <h3>📊 Overview</h3>
+            <h3 class="section-title">📊 Overview</h3>
             <table>
                 <tr><td>Score</td><td>${safe(d.score)}</td></tr>
                 <tr><td>RSI</td><td>${safe(d.rsi)}</td></tr>
@@ -154,7 +212,7 @@ function render(d){
         </div>
 
         <div class="card">
-            <h3>⚡ Signals</h3>
+            <h3 class="section-title">⚡ Technical Signals</h3>
             <table>
                 <tr><td>MACD</td><td>${d.macd}</td></tr>
                 <tr><td>VWAP</td><td>${d.vwap}</td></tr>
@@ -164,7 +222,7 @@ function render(d){
         </div>
 
         <div class="card">
-            <h3>⏱ Timeframes</h3>
+            <h3 class="section-title">⏱ Timeframes</h3>
             <table>
                 <tr><td>1H</td><td>${d.timeframes?.["1H"] || "-"}</td></tr>
                 <tr><td>4H</td><td>${d.timeframes?.["4H"] || "-"}</td></tr>
@@ -175,7 +233,7 @@ function render(d){
         </div>
 
         <div class="card">
-            <h3>🎯 Risk Management</h3>
+            <h3 class="section-title">🎯 Risk Management</h3>
             <table>
                 <tr><td>Stop Loss (Small)</td><td>${safe(d.risk?.stop_loss_small)}</td></tr>
                 <tr><td>Stop Loss (Big)</td><td>${safe(d.risk?.stop_loss_big)}</td></tr>
@@ -187,10 +245,12 @@ function render(d){
     </div>
 
     <div class="card">
-        <h3>📈 Live Chart</h3>
-        <iframe 
+        <h3 class="section-title">📈 Live TradingView Chart</h3>
+        <iframe
             src="https://s.tradingview.com/widgetembed/?symbol=${d.symbol}&interval=D&theme=dark"
-            width="100%" height="400" frameborder="0">
+            width="100%"
+            height="420"
+            frameborder="0">
         </iframe>
     </div>
     `;
@@ -198,32 +258,102 @@ function render(d){
     document.getElementById("result").innerHTML = html;
 }
 
-/* ---------- SCANNER ---------- */
+
+/* =====================================================
+SCANNER
+===================================================== */
+
 async function loadScanner(){
+
     try{
         const res = await fetch(`${API}/scanner`);
         const data = await res.json();
 
-        let html = `<div class="grid">`;
+        let html = `<h2>🔥 Top Scanner Results</h2><div class="grid">`;
 
-        [...data.TOP_BUY, ...data.TOP_SELL].forEach(x=>{
+        [...data.TOP_BUY, ...data.TOP_SELL].forEach(x => {
             html += `
             <div class="card">
                 <h3>${x.symbol}</h3>
                 <span class="badge ${badgeCls(x.signal)}">${x.signal}</span>
-                <p>Score: ${safe(x.score)}</p>
-                <button onclick="analyze('${x.symbol}')">Analyze</button>
-            </div>`;
+
+                <table style="margin-top:12px;">
+                    <tr><td>Score</td><td>${safe(x.score)}</td></tr>
+                    <tr><td>RSI</td><td>${safe(x.rsi)}</td></tr>
+                    <tr><td>Breakout</td><td>${x.breakout || "-"}</td></tr>
+                </table>
+
+                <br>
+                <button onclick="analyze('${x.symbol}')">
+                    Full Analysis
+                </button>
+            </div>
+            `;
         });
 
-        html += "</div>";
+        html += `</div>`;
 
         document.getElementById("result").innerHTML = html;
 
-    }catch(e){
+    }catch(err){
+        console.error(err);
         alert("Scanner Error");
     }
 }
+
+
+/* =====================================================
+INDEX SCANNER
+===================================================== */
+
+async function loadIndexes(){
+
+    try{
+        const res = await fetch(`${API}/index-scanner`);
+        const data = await res.json();
+
+        let html = `
+        <div class="card">
+            <h2>📌 Market Index Scanner</h2>
+            <table>
+                <tr>
+                    <td><b>Index</b></td>
+                    <td><b>Price</b></td>
+                    <td><b>RSI</b></td>
+                    <td><b>Signal</b></td>
+                    <td><b>Breakout</b></td>
+                </tr>
+        `;
+
+        data.forEach(x => {
+            html += `
+                <tr>
+                    <td>${x.index}</td>
+                    <td>${safe(x.price)}</td>
+                    <td>${safe(x.rsi)}</td>
+                    <td>
+                        <span class="badge ${badgeCls(x.signal)}">
+                            ${x.signal}
+                        </span>
+                    </td>
+                    <td>${x.breakout || "-"}</td>
+                </tr>
+            `;
+        });
+
+        html += `
+            </table>
+        </div>
+        `;
+
+        document.getElementById("result").innerHTML = html;
+
+    }catch(err){
+        console.error(err);
+        alert("Index Scanner Error");
+    }
+}
+
 </script>
 
 </body>
