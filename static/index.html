@@ -2,122 +2,474 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Market AI Scanner</title>
+<title>DeepGenny – Market AI Scanner</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <style>
+:root{
+    --bg:#fdf7fa;
+    --bg-soft:#faf0f5;
+    --card:#ffffff;
+    --card-hover:#fdf2f8;
+    --border:#f4d0de;
+    --border-soft:#fae6ee;
+    --text:#2c2c34;
+    --text-soft:#6b6270;
+    --accent:#9d3c5a;
+    --accent-hover:#7c2c47;
+    --accent-soft:#f4d0de;
+    --buy-bg:#e8f5e9;
+    --buy-text:#1b5e20;
+    --sell-bg:#ffebee;
+    --sell-text:#b71c1c;
+    --hold-bg:#f5f5f5;
+    --hold-text:#424242;
+}
+
+*{ box-sizing:border-box; }
+
 body{
-    font-family: Arial, Helvetica, sans-serif;
-    background:#0f172a;
-    color:#e5e7eb;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background:var(--bg);
+    color:var(--text);
     margin:0;
-    padding:14px;
+    padding:16px;
+    line-height:1.5;
 }
-h1,h2,h3,h4{color:#38bdf8;margin:6px 0}
-input,button{
-    padding:10px;
+
+h1{
+    color:var(--accent);
+    margin:6px 0 14px 0;
+    font-size:22px;
+    font-weight:700;
+    padding-bottom:10px;
+    border-bottom:2px solid var(--accent-soft);
+}
+h2{ color:var(--accent); margin:6px 0; font-size:18px; font-weight:700; }
+h3{ color:var(--accent); margin:6px 0; font-size:16px; font-weight:600; }
+h4{ color:var(--accent); margin:10px 0 4px 0; font-size:14px; font-weight:600; letter-spacing:0.2px; }
+
+input,button,select{
+    padding:9px 12px;
     font-size:14px;
+    border-radius:6px;
+    border:1px solid var(--border);
+    font-family:inherit;
+    transition:all 0.15s ease;
 }
-input{width:160px}
+input,select{
+    background:#fff;
+    color:var(--text);
+    width:240px;
+}
+input:focus,select:focus{
+    outline:none;
+    border-color:var(--accent);
+    box-shadow:0 0 0 3px var(--accent-soft);
+}
 button{
     cursor:pointer;
-    background:#2563eb;
-    border:none;
+    background:var(--accent);
     color:white;
-    border-radius:6px;
+    border:none;
+    margin:4px 2px;
+    font-weight:600;
+    letter-spacing:0.3px;
 }
+button:hover{ background:var(--accent-hover); }
+button.secondary{
+    background:var(--accent-soft);
+    color:var(--accent-hover);
+}
+button.secondary:hover{ background:#f0c0d2; }
+
 .card{
-    background:#020617;
-    padding:14px;
+    background:var(--card);
+    padding:16px 18px;
     border-radius:10px;
     margin-bottom:14px;
-    box-shadow:0 0 12px rgba(0,0,0,0.45);
+    border:1px solid var(--border);
+    box-shadow:0 1px 3px rgba(157,60,90,0.06);
 }
 .grid{
     display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
-    gap:12px;
+    grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+    gap:14px;
 }
+
+/* ---------- Badges (soft bg + dark text) ---------- */
 .badge{
-    padding:4px 10px;
-    border-radius:6px;
+    padding:3px 10px;
+    border-radius:12px;
     font-size:12px;
+    font-weight:600;
     display:inline-block;
+    border:1px solid transparent;
 }
-.buy{background:#16a34a}
-.sell{background:#dc2626}
-.hold{background:#6b7280}
-.small{font-size:12px;color:#94a3b8}
+.badge.buy, .badge.bull{
+    background:var(--buy-bg);
+    color:var(--buy-text);
+    border-color:#a5d6a7;
+}
+.badge.sell, .badge.bear{
+    background:var(--sell-bg);
+    color:var(--sell-text);
+    border-color:#ef9a9a;
+}
+.badge.hold, .badge.neutral{
+    background:var(--hold-bg);
+    color:var(--hold-text);
+    border-color:#d0d0d0;
+}
+
+.small{ font-size:12px; color:var(--text-soft); line-height:1.4; }
+
 table{
     width:100%;
     border-collapse:collapse;
     margin-top:6px;
+    font-size:13px;
+}
+th{
+    padding:7px 8px;
+    background:var(--bg-soft);
+    text-align:left;
+    color:var(--accent);
+    border-bottom:2px solid var(--border);
+    font-weight:600;
+    font-size:12px;
+    text-transform:uppercase;
+    letter-spacing:0.3px;
 }
 td{
-    padding:5px 6px;
-    border-bottom:1px solid #1e293b;
+    padding:6px 8px;
+    border-bottom:1px solid var(--border-soft);
 }
-ul{padding-left:18px;margin:6px 0;}
+td:first-child{
+    color:var(--text-soft);
+    font-weight:500;
+    width:50%;
+}
+td:last-child{
+    font-weight:500;
+}
+ul{ padding-left:20px; margin:6px 0; }
+li{ margin:4px 0; font-size:13px; }
+.section{ margin-top:16px; }
+.disabled{ opacity:0.55; font-style:italic; }
+.score-line{ margin:5px 0; font-size:13px; }
+.score-line b{ color:var(--accent); }
+
+/* ---------- Custom autocomplete ---------- */
+.autocomplete-wrap{
+    position:relative;
+    display:inline-block;
+}
+.autocomplete-list{
+    position:absolute;
+    top:100%;
+    left:0;
+    right:0;
+    z-index:1000;
+    background:#fff;
+    border:1px solid var(--border);
+    border-top:none;
+    border-radius:0 0 6px 6px;
+    box-shadow:0 6px 16px rgba(157,60,90,0.12);
+    max-height:280px;
+    overflow-y:auto;
+    margin:0;
+    padding:0;
+    list-style:none;
+}
+.autocomplete-list li{
+    padding:9px 14px;
+    cursor:pointer;
+    font-size:13px;
+    border-bottom:1px solid var(--border-soft);
+    transition:background 0.1s;
+}
+.autocomplete-list li:hover,
+.autocomplete-list li.active{
+    background:var(--card-hover);
+    color:var(--accent);
+}
+.autocomplete-list li:last-child{
+    border-bottom:none;
+}
+.autocomplete-list strong{
+    color:var(--accent);
+    font-weight:700;
+}
+.autocomplete-list .tag{
+    float:right;
+    font-size:10px;
+    color:var(--accent);
+    background:var(--accent-soft);
+    padding:1px 7px;
+    border-radius:8px;
+    font-weight:600;
+    margin-left:8px;
+}
+
+/* ---------- Section separator ---------- */
+.section-divider{
+    height:1px;
+    background:var(--accent-soft);
+    margin:16px 0;
+}
+
 @media(max-width:600px){
-    input{width:100%}
-    button{width:100%;margin-top:6px}
+    input,select,button{ width:100%; margin-top:6px; }
+    .autocomplete-wrap{ width:100%; }
+    h1{ font-size:18px; }
 }
 </style>
 </head>
 
 <body>
 
-<h1>📈 Market AI Scanner</h1>
+<h1>📈 DeepGenny – Market AI Scanner</h1>
 
+<!-- ================= STOCK ANALYSIS ================= -->
 <div class="card">
-    <input id="symbol" placeholder="RELIANCE.NS">
-    <button onclick="analyze()">Analyze</button>
-    <button onclick="loadScanner()">Scanner</button>
+    <h3>Analyze any stock</h3>
+    <div class="autocomplete-wrap" style="width:240px;">
+        <input id="symbol" placeholder="RELIANCE, HAL, IDEA, TCS..." autocomplete="off">
+        <ul id="symbolSuggestions" class="autocomplete-list" style="display:none;"></ul>
+    </div>
+    <button onclick="analyze()">Analyze Stock</button>
+    <button class="secondary" onclick="loadScanner()">Run Scanner</button>
+    <p class="small">Type any Yahoo ticker — RELIANCE, HAL, IDEA, TATAMOTORS — the system fetches it even if not suggested.</p>
 </div>
 
 <div id="result"></div>
 
+<div class="section-divider"></div>
+
+<!-- ================= FOREX & COMMODITY ================= -->
+<div class="card">
+    <h3>🌍 Forex & Commodities</h3>
+    <button onclick="loadForexCommodity()">Load Forex & Commodity</button>
+    <div id="forexResult"></div>
+</div>
+
+<div class="section-divider"></div>
+
+<!-- ================= OPTION SENTIMENT ================= -->
+<div class="card">
+    <h3>📊 Option Sentiment (NSE)</h3>
+    <p class="small">Type any symbol — case-insensitive, autocomplete filters as you type.</p>
+    <div class="autocomplete-wrap" style="width:240px;">
+        <input id="optSymbol" placeholder="RELIANCE, HAL, NIFTY..." autocomplete="off">
+        <ul id="optSuggestions" class="autocomplete-list" style="display:none;"></ul>
+    </div>
+    <button onclick="loadOptionSentiment()">Load Option Sentiment</button>
+    <div id="optionResult"></div>
+</div>
+
 <script>
-const API = ""; // same host
+const API = "";
+
+/* ---------- symbol list ---------- */
+let ALL_SYMBOLS = [];
+let SYMBOL_SET = new Set();
+
+async function loadSymbolUniverse(){
+    try{
+        const res = await fetch(`${API}/symbols`);
+        if(!res.ok) return;
+        const data = await res.json();
+        const idx = data.indexes || [];
+        const stocks = data.stocks || [];
+        const combined = [...new Set([...idx, ...stocks])];
+        ALL_SYMBOLS = combined.map(s => s.toUpperCase());
+        SYMBOL_SET = new Set(ALL_SYMBOLS);
+    }catch(e){
+        console.error("loadSymbolUniverse error:", e);
+    }
+}
 
 /* ---------- helpers ---------- */
 function safeNum(v, d=2){
-    if(v === undefined || v === null) return "-";
+    if(v === undefined || v === null) return "N/A";
     const n = Number(v);
-    if(isNaN(n)) return "-";
+    if(isNaN(n)) return "N/A";
     return n.toFixed(d);
 }
 function badgeCls(s){
     if(!s) return "hold";
-    s = s.toUpperCase();
-    if(s.includes("BUY")) return "buy";
-    if(s.includes("SELL")) return "sell";
+    s = String(s).toUpperCase();
+    if(s.includes("BUY") || s === "BULLISH" || s === "UP") return "buy";
+    if(s.includes("SELL") || s === "BEARISH" || s === "DOWN") return "sell";
     return "hold";
 }
 
-/* ---------- analyze ---------- */
+/* ---------- custom autocomplete ---------- */
+function bindAutocomplete(inputId, listId, onSelect){
+    const input = document.getElementById(inputId);
+    const list = document.getElementById(listId);
+    let activeIndex = -1;
+    let currentMatches = [];
+
+    function render(matches, typed){
+        currentMatches = matches;
+        list.innerHTML = "";
+        if(matches.length === 0){
+            list.style.display = "none";
+            return;
+        }
+        matches.forEach((sym, i) => {
+            const li = document.createElement("li");
+            const isIndex = ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY"].includes(sym);
+            li.innerHTML = `${highlightMatch(sym, typed)}${isIndex ? '<span class="tag">index</span>' : ''}`;
+            li.onclick = () => {
+                input.value = sym;
+                list.style.display = "none";
+                if(onSelect) onSelect(sym);
+            };
+            li.onmouseenter = () => { activeIndex = i; updateActive(); };
+            list.appendChild(li);
+        });
+        list.style.display = "block";
+        activeIndex = -1;
+    }
+
+    function highlightMatch(sym, typed){
+        if(!typed) return sym;
+        const idx = sym.toUpperCase().indexOf(typed.toUpperCase());
+        if(idx === -1) return sym;
+        return sym.slice(0, idx) + "<strong>" + sym.slice(idx, idx + typed.length) + "</strong>" + sym.slice(idx + typed.length);
+    }
+
+    function updateActive(){
+        Array.from(list.children).forEach((li, i) => {
+            li.classList.toggle("active", i === activeIndex);
+        });
+    }
+
+    function filter(typed){
+        const t = typed.trim().toUpperCase();
+        if(!t){ list.style.display = "none"; return; }
+        const starts = ALL_SYMBOLS.filter(s => s.startsWith(t));
+        const contains = ALL_SYMBOLS.filter(s => !s.startsWith(t) && s.includes(t));
+        const matches = [...starts, ...contains].slice(0, 8);
+        render(matches, typed);
+    }
+
+    input.addEventListener("input", (e) => filter(e.target.value));
+
+    input.addEventListener("keydown", (e) => {
+        if(list.style.display === "none") return;
+        if(e.key === "ArrowDown"){
+            e.preventDefault();
+            activeIndex = Math.min(activeIndex + 1, currentMatches.length - 1);
+            updateActive();
+        } else if(e.key === "ArrowUp"){
+            e.preventDefault();
+            activeIndex = Math.max(activeIndex - 1, 0);
+            updateActive();
+        } else if(e.key === "Enter"){
+            if(activeIndex >= 0 && currentMatches[activeIndex]){
+                e.preventDefault();
+                input.value = currentMatches[activeIndex];
+                list.style.display = "none";
+                if(onSelect) onSelect(currentMatches[activeIndex]);
+            }
+        } else if(e.key === "Escape"){
+            list.style.display = "none";
+        }
+    });
+
+    input.addEventListener("blur", () => {
+        setTimeout(() => { list.style.display = "none"; }, 200);
+    });
+}
+
+/* ---------- analyze stock ---------- */
 async function analyze(sym){
-    const symbol = sym || document.getElementById("symbol").value.trim();
+    const symbol = (sym || document.getElementById("symbol").value.trim()).toUpperCase();
     if(!symbol) return alert("Enter symbol");
 
-    const res = await fetch(`${API}/analyze?symbol=${symbol}`);
-    if(!res.ok) return alert("Analyze API error");
+    const lookup = symbol.includes(".") ? symbol : (["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY"].includes(symbol) ? symbol : symbol + ".NS");
+
+    document.getElementById("result").innerHTML = `<div class="card"><p>Loading ${lookup}...</p></div>`;
+
+    const res = await fetch(`${API}/analyze?symbol=${lookup}`);
+    if(!res.ok){
+        document.getElementById("result").innerHTML = `<div class="card"><p>Analyze API error (HTTP ${res.status})</p></div>`;
+        return;
+    }
 
     const data = await res.json();
+    if(data.error){
+        document.getElementById("result").innerHTML = `<div class="card"><p>${data.error}</p></div>`;
+        return;
+    }
     renderAnalysis(data.primary_engine);
 }
 
 /* ---------- render analysis ---------- */
 function renderAnalysis(p){
+    const opt = p.option_sentiment;
+    let optionBlock = "";
+
+    if(opt){
+        optionBlock = `
+        <h4>📊 Option Sentiment</h4>
+        <table>
+            <tr><td>Spot</td><td>${safeNum(opt.spot)}</td></tr>
+            <tr><td>ATM Strike</td><td>${safeNum(opt.atm)}</td></tr>
+            <tr><td>PCR</td><td>${safeNum(opt.pcr,3)}</td></tr>
+            <tr><td>Bias</td><td><span class="badge ${badgeCls(opt.bias)}">${opt.bias || "N/A"}</span></td></tr>
+            <tr><td>Max Pain</td><td>${safeNum(opt.max_pain)}</td></tr>
+            <tr><td>Max Pain Dist %</td><td>${safeNum(opt.max_pain_dist_pct)}</td></tr>
+            <tr><td>Call Wall (Resistance)</td><td>${safeNum(opt.call_wall)}</td></tr>
+            <tr><td>Put Wall (Support)</td><td>${safeNum(opt.put_wall)}</td></tr>
+            <tr><td>Total Call OI</td><td>${opt.total_call_oi ?? "N/A"}</td></tr>
+            <tr><td>Total Put OI</td><td>${opt.total_put_oi ?? "N/A"}</td></tr>
+        </table>`;
+    } else {
+        optionBlock = `<p class="small">Option chain unavailable for this symbol.</p>`;
+    }
+
+    const feat = p.option_features_used;
+    let featBlock = "";
+    if(feat){
+        featBlock = `
+        <h4>🎯 Features consumed by RF</h4>
+        <table>
+            <tr><td>PCR</td><td>${safeNum(feat.pcr,3)}</td></tr>
+            <tr><td>Max Pain Dist %</td><td>${safeNum(feat.max_pain_dist_pct)}</td></tr>
+            <tr><td>Call Wall</td><td>${safeNum(feat.call_wall)}</td></tr>
+            <tr><td>Put Wall</td><td>${safeNum(feat.put_wall)}</td></tr>
+            <tr><td>Interpretation</td><td>${feat.interpretation || "N/A"}</td></tr>
+        </table>`;
+    }
+
+    const scoreReasons = p.score_reasons || [];
+
+    let rfProb = "N/A", lstmProb = "N/A", rfTrend = "-", lstmTrend = "-";
+    const aiProb = p["ai_probability_%"] || {};
+    if(aiProb.RF != null) rfProb = safeNum(aiProb.RF);
+    if(aiProb.LSTM != null) lstmProb = safeNum(aiProb.LSTM);
+
+    const aiTrend = p["ai_trend"] || {};
+    if(aiTrend.RF) rfTrend = aiTrend.RF;
+    if(aiTrend.LSTM) lstmTrend = aiTrend.LSTM;
+
     let html = `
     <div class="card">
         <h2>${p.symbol}</h2>
         <span class="badge ${badgeCls(p.final_signal)}">${p.final_signal}</span>
-        <p>Confidence:
+        <p class="score-line">Confidence:
             <b>${safeNum(p["confidence_score_%"],1)}%</b>
             (${p.confidence_band})
+            | Scan Score: <b>${safeNum(p.scan_score,1)}</b>
+            | Alignment: <b>${safeNum(p.alignment_pct,1)}%</b>
         </p>
         <p class="small">
+            AI model: ${p.ai_model || "N/A"} |
             Daily: ${p.daily_trend} |
             Weekly: ${p.weekly_trend} |
             Monthly: ${p.monthly_trend}
@@ -125,15 +477,23 @@ function renderAnalysis(p){
 
         <h4>AI Probabilities & Trend</h4>
         <table>
-            <tr><td>RF Probability</td><td>${safeNum(p.ai_probability_?.RF)}</td></tr>
-            <tr><td>LSTM Probability</td><td>${safeNum(p.ai_probability_?.LSTM)}</td></tr>
-            <tr><td>RF Trend</td><td>${p.ai_tr?.RF || "-"}</td></tr>
-            <tr><td>LSTM Trend</td><td>${p.ai_tr?.LSTM || "-"}</td></tr>
+            <tr><td>RF Probability (P down)</td><td>${rfProb}</td></tr>
+            <tr><td>RF Trend</td><td><span class="badge ${badgeCls(rfTrend)}">${rfTrend}</span></td></tr>
+            <tr class="disabled"><td>LSTM Probability</td><td>${lstmProb} (disabled in scoring)</td></tr>
+            <tr class="disabled"><td>LSTM Trend</td><td>${lstmTrend} (disabled in scoring)</td></tr>
         </table>
 
-        <h4>Reasons</h4>
+        ${optionBlock}
+        ${featBlock}
+
+        <h4>Score Reasons (why this score)</h4>
         <ul>
-            ${p.reason ? p.reason.map(r => `<li>${r}</li>`).join("") : ""}
+            ${scoreReasons.length ? scoreReasons.map(r => `<li>${r}</li>`).join("") : "<li>No scoring factors triggered</li>"}
+        </ul>
+
+        <h4>Timeframe Reasons (indicators)</h4>
+        <ul>
+            ${p.reason && p.reason.length ? p.reason.map(r => `<li>${r}</li>`).join("") : "<li>—</li>"}
         </ul>
     </div>
 
@@ -149,19 +509,43 @@ function renderAnalysis(p){
 /* ---------- timeframe block ---------- */
 function renderTF(tf, d){
     if(!d) return "";
+
+    let pivotBlock = "";
+    if(d.pivots){
+        pivotBlock = `
+        <h4>Pivot Points</h4>
+        <table>
+            <tr><td>R2</td><td>${safeNum(d.pivots.R2)}</td></tr>
+            <tr><td>R1</td><td>${safeNum(d.pivots.R1)}</td></tr>
+            <tr><td>Pivot (P)</td><td>${safeNum(d.pivots.P)}</td></tr>
+            <tr><td>S1</td><td>${safeNum(d.pivots.S1)}</td></tr>
+            <tr><td>S2</td><td>${safeNum(d.pivots.S2)}</td></tr>
+        </table>`;
+    }
+
+    const crossFlags = [];
+    if(d.VWAP_cross_up) crossFlags.push("VWAP ↑");
+    if(d.VWAP_cross_down) crossFlags.push("VWAP ↓");
+    if(d.EMA_cross_up) crossFlags.push("EMA9/21 ↑");
+    if(d.EMA_cross_down) crossFlags.push("EMA9/21 ↓");
+    const crossLine = crossFlags.length ? crossFlags.join(" | ") : "No fresh cross today";
+
     return `
     <div class="card">
         <h3>${tf} Timeframe</h3>
+        <p class="small">Crosses today: <b>${crossLine}</b></p>
 
         <table>
             <tr><td>Price</td><td>${safeNum(d.Price)}</td></tr>
-            <tr><td>Volume</td><td>${d.Volume ?? "-"}</td></tr>
-            <tr><td>VWAP</td><td>${safeNum(d.VWAP)}</td></tr>
+            <tr><td>Volume</td><td>${d.Volume ?? "N/A"}</td></tr>
+            <tr><td>VWAP (20d)</td><td>${safeNum(d.VWAP)}</td></tr>
             <tr><td>EMA 5</td><td>${safeNum(d.EMA5)}</td></tr>
             <tr><td>EMA 10</td><td>${safeNum(d.EMA10)}</td></tr>
             <tr><td>EMA 20</td><td>${safeNum(d.EMA20)}</td></tr>
-            <tr><td>Bias</td><td>${d.Bias}</td></tr>
+            <tr><td>Bias</td><td><span class="badge ${badgeCls(d.Bias)}">${d.Bias}</span></td></tr>
         </table>
+
+        ${pivotBlock}
 
         <h4>Indicators</h4>
         <table>
@@ -181,7 +565,7 @@ function renderTF(tf, d){
 
         <h4>Reasons</h4>
         <ul>
-            ${d.reason ? d.reason.map(r => `<li>${r}</li>`).join("") : ""}
+            ${d.reason && d.reason.length ? d.reason.map(r => `<li>${r}</li>`).join("") : "<li>—</li>"}
         </ul>
     </div>
     `;
@@ -189,18 +573,22 @@ function renderTF(tf, d){
 
 /* ---------- scanner ---------- */
 async function loadScanner(){
+    document.getElementById("result").innerHTML = `<div class="card"><p>Scanner running... may take 2-5 minutes for 74 symbols × option chain.</p></div>`;
+
     const res = await fetch(`${API}/scanner`);
     if(!res.ok) return alert("Scanner API error");
 
     const data = await res.json();
-    let html = `<div class="card"><h2>Scanner Results</h2></div><div class="grid">`;
+    let html = `<div class="card"><h2>Scanner Results (${data.TOTAL_SCANNED})</h2></div><div class="grid">`;
 
     [...data.TOP_BUY, ...data.TOP_SELL].forEach(x=>{
         html += `
         <div class="card">
             <h3>${x.symbol}</h3>
             <span class="badge ${badgeCls(x.signal)}">${x.signal}</span>
-            <p>Score: <b>${safeNum(x.score,1)}</b></p>
+            <p class="score-line">Scan Score: <b>${safeNum(x.scan_score,1)}</b></p>
+            <p class="score-line">Confidence: <b>${safeNum(x.confidence_score,1)}%</b></p>
+            <p class="score-line small">Alignment: ${safeNum(x.alignment_pct,1)}%</p>
             <button onclick="analyze('${x.symbol}')">View</button>
         </div>`;
     });
@@ -208,6 +596,83 @@ async function loadScanner(){
     html += "</div>";
     document.getElementById("result").innerHTML = html;
 }
+
+/* ---------- forex & commodity ---------- */
+async function loadForexCommodity(){
+    document.getElementById("forexResult").innerHTML = `<p class="small">Loading...</p>`;
+
+    const res = await fetch(`${API}/forex-commodity`);
+    if(!res.ok) return alert("Forex API error");
+
+    const data = await res.json();
+    if(!data.data || data.data.length === 0){
+        document.getElementById("forexResult").innerHTML = `<p class="small">No data returned.</p>`;
+        return;
+    }
+
+    let html = `<div class="grid">`;
+    data.data.forEach(x=>{
+        const changeCls = x.change_pct > 0 ? "buy" : x.change_pct < 0 ? "sell" : "hold";
+        html += `
+        <div class="card">
+            <h4>${x.name} (${x.ticker})</h4>
+            <table>
+                <tr><td>Price</td><td>${safeNum(x.price,4)}</td></tr>
+                <tr><td>Change %</td><td><span class="badge ${changeCls}">${safeNum(x.change_pct,2)}%</span></td></tr>
+                <tr><td>RSI</td><td>${safeNum(x.rsi)}</td></tr>
+                <tr><td>Bias</td><td><span class="badge ${badgeCls(x.bias)}">${x.bias}</span></td></tr>
+            </table>
+        </div>`;
+    });
+    html += "</div>";
+    document.getElementById("forexResult").innerHTML = html;
+}
+
+/* ---------- option sentiment ---------- */
+async function loadOptionSentiment(symOverride){
+    let sym = (symOverride || document.getElementById("optSymbol").value.trim()).toUpperCase();
+    if(!sym){
+        alert("Type a symbol (e.g. RELIANCE, HAL, NIFTY)");
+        return;
+    }
+    if(sym.endsWith(".NS")) sym = sym.slice(0, -3);
+
+    const indexSyms = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"];
+    const isIdx = indexSyms.includes(sym);
+
+    document.getElementById("optionResult").innerHTML = `<p class="small">Loading ${sym} (${isIdx ? "index" : "stock"})...</p>`;
+
+    const res = await fetch(`${API}/option-sentiment?symbol=${sym}&is_index=${isIdx}`);
+    if(!res.ok) return alert("Option sentiment API error");
+
+    const d = await res.json();
+    if(d.error){
+        document.getElementById("optionResult").innerHTML = `<p class="small">${d.error}</p>`;
+        return;
+    }
+
+    document.getElementById("optionResult").innerHTML = `
+    <table>
+        <tr><td>Symbol</td><td>${sym} (${isIdx ? "index" : "stock"})</td></tr>
+        <tr><td>Spot</td><td>${safeNum(d.spot)}</td></tr>
+        <tr><td>ATM</td><td>${safeNum(d.atm)}</td></tr>
+        <tr><td>PCR</td><td>${safeNum(d.pcr,3)}</td></tr>
+        <tr><td>Bias</td><td><span class="badge ${badgeCls(d.bias)}">${d.bias || "N/A"}</span></td></tr>
+        <tr><td>Max Pain</td><td>${safeNum(d.max_pain)}</td></tr>
+        <tr><td>Max Pain Dist %</td><td>${safeNum(d.max_pain_dist_pct)}</td></tr>
+        <tr><td>Call Wall</td><td>${safeNum(d.call_wall)}</td></tr>
+        <tr><td>Put Wall</td><td>${safeNum(d.put_wall)}</td></tr>
+        <tr><td>Total Call OI</td><td>${d.total_call_oi ?? "N/A"}</td></tr>
+        <tr><td>Total Put OI</td><td>${d.total_put_oi ?? "N/A"}</td></tr>
+    </table>`;
+}
+
+/* ---------- init ---------- */
+window.addEventListener("DOMContentLoaded", async () => {
+    await loadSymbolUniverse();
+    bindAutocomplete("symbol", "symbolSuggestions", (sym) => analyze(sym));
+    bindAutocomplete("optSymbol", "optSuggestions", (sym) => loadOptionSentiment(sym));
+});
 </script>
 
 </body>
