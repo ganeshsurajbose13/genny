@@ -2,7 +2,7 @@
 DeepGenny — Unified Market Analysis & Trading Signal Engine
 Built by: Ganesh + AI assistant
 ====================================================
-Supertrend + Weekly/Monthly RSI (60/40) + VWAP + OI tracking
+Combo score = rule_score + (stat_prob - rule_score)*0.4 + (hit_rate - 50)*0.2
 """
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +14,7 @@ import numpy as np
 import os
 import time
 import sqlite3
+import math
 import warnings
 from datetime import datetime
 warnings.filterwarnings("ignore")
@@ -55,11 +56,14 @@ def init_db():
             max_pain_dist REAL,
             overbought INTEGER,
             call_oi REAL,
-            put_oi REAL
+            put_oi REAL,
+            combo_score REAL,
+            rule_score REAL,
+            stat_prob_score REAL,
+            hit_rate_score REAL
         )
     """)
-    # Add new columns if table already exists (migration)
-    for col in ["call_oi", "put_oi"]:
+    for col in ["call_oi", "put_oi", "combo_score", "rule_score", "stat_prob_score", "hit_rate_score"]:
         try:
             conn.execute(f"ALTER TABLE signals ADD COLUMN {col} REAL")
         except sqlite3.OperationalError:
@@ -78,13 +82,13 @@ def log_signal(result):
 
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
-        "INSERT INTO signals (ts, symbol, signal, score, scan_score, price, pcr, max_pain_dist, overbought, call_oi, put_oi) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO signals (ts, symbol, signal, score, scan_score, price, pcr, max_pain_dist, overbought, call_oi, put_oi, combo_score, rule_score, stat_prob_score, hit_rate_score) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             datetime.utcnow().isoformat(),
             p.get("symbol"),
             p.get("final_signal"),
-            p.get("confidence_score_%"),
+            p.get("combo_score"),
             p.get("scan_score"),
             price,
             opt.get("pcr"),
@@ -92,6 +96,10 @@ def log_signal(result):
             overbought,
             opt.get("total_call_oi"),
             opt.get("total_put_oi"),
+            p.get("combo_score"),
+            p.get("rule_score"),
+            p.get("stat_prob_score"),
+            p.get("hit_rate_score"),
         ),
     )
     conn.commit()
@@ -573,6 +581,105 @@ def prepare_analysis(df):
     }
 
 
+def compute_statistical_probability(df, score, weekly_rsi, monthly_rsi, pcr, atr_pct):
+    p_base = score / 100.0
+
+    weekly_adj = -0.02 * (weekly_rsi - 50) / 10
+    monthly_adj = -0.015 * (monthly_rsi - 50) / 10
+
+    vol_adj = -0.01 * max(0, (atr_pct or 0) - 2)
+
+    if pcr is not None:
+        if pcr < 0.5:
+            pcr_adj = 0.03
+        elif pcr > 1.5:
+            pcr_adj = -0.03
+        else:
+            pcr_adj = 0.0
+    else:
+        pcr_adj = 0.0
+
+    p_adjusted = p_base + weekly_adj + monthly_adj + vol_adj + pcr_adj
+    p_adjusted = max(0.05, min(0.95, p_adjusted))
+
+    n_samples = min(len(df), 252)
+    se = math.sqrt(p_adjusted * (1 - p_adjusted) / n_samples) if n_samples > 0 else 0
+    ci_low = max(0, p_adjusted - 1.96 * se)
+    ci_high = min(1, p_adjusted + 1.96 * se)
+
+    return {
+        "probability_up": round(p_adjusted * 100, 2),
+        "confidence_interval_95": [round(ci_low * 100, 2), round(ci_high * 100, 2)],
+        "adjustments": {
+            "base_from_score": round(p_base * 100, 2),
+            "weekly_rsi_adj": round(weekly_adj * 100, 2),
+            "monthly_rsi_adj": round(monthly_adj * 100, 2),
+            "volatility_adj": round(vol_adj * 100, 2),
+            "pcr_adj": round(pcr_adj * 100, 2),
+        },
+        "sample_size": n_samples,
+        "formula": "p = p_base + rsi_adj + vol_adj + pcr_adj, CI = p ± 1.96*sqrt(p(1-p)/n)"
+    }
+
+
+def compute_historical_hit_rate(df, lookback=252, forward=5):
+    close = df["Close"]
+    if len(close) < lookback + forward + 20:
+        return None
+
+    rsi_series = rsi(close)
+    ema_series = ema(close, 20)
+
+    hits = 0
+    total = 0
+    start = max(20, len(close) - lookback - forward)
+    for i in range(start, len(close) - forward):
+        r = rsi_series.iloc[i]
+        if 40 <= r <= 60 and close.iloc[i] > ema_series.iloc[i]:
+            total += 1
+            if close.iloc[i + forward] > close.iloc[i]:
+                hits += 1
+
+    if total == 0:
+        return None
+
+    hit_rate = hits / total
+    return {
+        "hit_rate_pct": round(hit_rate * 100, 2),
+        "sample_size": total,
+        "lookback_days": lookback,
+        "forward_days": forward,
+        "note": f"Among {total} historical days with similar conditions, {hits} led to a rise in {forward} days."
+    }
+
+
+def compute_combo_score(rule_score, stat_prob_dict, hit_rate_dict):
+    """
+    Design B: rule_score is anchor. stat_prob measures DISAGREEMENT with rule,
+    not its own level. This prevents double-counting.
+    combo = rule_score + (stat_prob - rule_score)*0.4 + (hit_rate - 50)*0.2
+    """
+    stat_prob = stat_prob_dict.get("probability_up", rule_score) if stat_prob_dict else rule_score
+    hit_rate = hit_rate_dict.get("hit_rate_pct", 50) if hit_rate_dict else 50
+
+    stat_adj = (stat_prob - rule_score) * 0.4
+    hit_adj = (hit_rate - 50) * 0.2
+
+    combo_before = rule_score + stat_adj + hit_adj
+    combo = max(0.0, min(100.0, combo_before))
+
+    return round(combo, 2), {
+        "rule_score": round(rule_score, 2),
+        "stat_prob": round(stat_prob, 2),
+        "hit_rate": round(hit_rate, 2),
+        "stat_adjustment": round(stat_adj, 2),
+        "hit_rate_adjustment": round(hit_adj, 2),
+        "combo_before_clamp": round(combo_before, 2),
+        "combo_after_clamp": round(combo, 2),
+        "formula": "combo = rule_score + (stat_prob - rule_score)*0.4 + (hit_rate - 50)*0.2"
+    }
+
+
 def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt, is_index,
                   weekly_rsi=50, monthly_rsi=50, weekly_above_vwap=False, monthly_above_vwap=False,
                   st_1d="UNKNOWN", st_4h="UNKNOWN"):
@@ -625,7 +732,7 @@ def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt,
     elif st_1d == "RED" and st_4h == "GREEN":
         reasons.append("Supertrend divergence: 1D red, 4H green (0)")
 
-    # Layer 2c: Higher timeframe RSI regime filter (60/40)
+    # Layer 2c: Higher timeframe RSI regime (60/40)
     if weekly_rsi > 60:
         score += 4
         reasons.append(f"Weekly RSI {weekly_rsi:.1f} > 60 — bullish regime (+4)")
@@ -659,7 +766,7 @@ def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt,
         score -= 4
         reasons.append("Monthly close below monthly VWAP (-4)")
 
-    # Layer 3: Quick triggers (crosses)
+    # Layer 3: Quick triggers
     if a1d:
         if a1d["VWAP_cross_up"]:
             score += 8
@@ -674,7 +781,7 @@ def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt,
             score -= 6
             reasons.append("EMA 9/21 cross DOWN today (-6)")
 
-    # Layer 4: Precision breakout (volume-gated, recency-checked, multi-TF)
+    # Layer 4: Precision breakout
     if a1d and a4h and a1h:
         d_break_up = a1d.get("Breakout_up", False)
         d_break_down = a1d.get("Breakout_down", False)
@@ -730,7 +837,7 @@ def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt,
             else:
                 reasons.append("1H breakdown but 4H bullish — no score (0)")
 
-    # Layer 5: Volume + open/close across timeframes
+    # Layer 5: Volume + open/close
     vol_score, vol_reasons = compute_volume_score(analysis)
     score += vol_score
     for r in vol_reasons:
@@ -882,11 +989,15 @@ def compute_scan_score(analysis, opt, is_index):
         pcr = opt.get("pcr")
         if pcr is not None:
             if is_index:
-                if pcr < 0.7:   s += 15
-                elif pcr > 1.5: s -= 15
+                if pcr < 0.5:
+                    s += 10
+                elif pcr > 1.5:
+                    s -= 10
             else:
-                if pcr < 0.7:   s -= 15
-                elif pcr > 1.3: s += 15
+                if pcr < 0.6:
+                    s -= 6
+                elif pcr > 1.4:
+                    s += 6
 
     rsi_val = a1d["Indicators"]["RSI"]
     if rsi_val < 30:  s += 10
@@ -917,11 +1028,9 @@ def engine(symbol, option_features=None, is_index=False):
     weekly_trend = regression_trend(df1d["Close"].resample("W").last(), min_points=20)
     monthly_trend = regression_trend(df1d["Close"].resample("ME").last(), min_points=12)
 
-    # Supertrend
     st_1d = supertrend_direction(df1d)
     st_4h = supertrend_direction(df4h)
 
-    # Weekly / Monthly RSI
     weekly_close = df1d["Close"].resample("W").last().dropna()
     monthly_close = df1d["Close"].resample("ME").last().dropna()
 
@@ -931,7 +1040,6 @@ def engine(symbol, option_features=None, is_index=False):
     monthly_rsi_series = rsi(monthly_close)
     monthly_rsi = float(monthly_rsi_series.iloc[-1]) if not monthly_rsi_series.empty else 50
 
-    # Weekly / Monthly VWAP
     weekly_df = df1d.resample("W").agg({
         "Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"
     }).dropna()
@@ -950,7 +1058,7 @@ def engine(symbol, option_features=None, is_index=False):
     rf_p, rf_t = rf_engine(df1d, option_features)
     lstm_p, lstm_t = lstm_engine(symbol, df1d)
 
-    score, reasons = compute_score(
+    rule_score, reasons = compute_score(
         analysis, daily_trend, weekly_trend, monthly_trend,
         rf_p, option_features, is_index,
         weekly_rsi, monthly_rsi,
@@ -960,11 +1068,52 @@ def engine(symbol, option_features=None, is_index=False):
     scan_score = compute_scan_score(analysis, option_features, is_index)
     vol_score, vol_reasons = compute_volume_score(analysis)
 
-    final_signal = ("STRONG BUY" if score >= 80 else
-                    "BUY" if score >= 65 else
-                    "STRONG SELL" if score <= 25 else
-                    "SELL" if score <= 40 else "HOLD")
-    confidence_band = "HIGH" if score >= 75 else "MEDIUM" if score >= 60 else "LOW"
+    close = df1d["Close"]
+    high = df1d["High"]
+    low = df1d["Low"]
+    price = float(close.iloc[-1])
+
+    mean_20 = float(close.tail(20).mean())
+    std_20 = float(close.tail(20).std())
+    price_z = round((price - mean_20) / std_20, 2) if std_20 > 0 else 0.0
+
+    rsi_series_all = rsi(close).dropna()
+    rsi_1y = rsi_series_all.tail(252)
+    rsi_current = float(rsi_series_all.iloc[-1]) if not rsi_series_all.empty else 50
+    rsi_percentile = round(float((rsi_1y < rsi_current).mean() * 100), 1) if len(rsi_1y) > 0 else None
+
+    atr_series_st = atr(df1d)
+    atr_current = float(atr_series_st.iloc[-1]) if not atr_series_st.empty else 0
+    atr_pct_val = round(atr_current / price * 100, 2) if price > 0 else None
+
+    sma_20 = close.tail(20).mean()
+    std_20_bb = close.tail(20).std()
+    upper_bb = sma_20 + 2 * std_20_bb
+    lower_bb = sma_20 - 2 * std_20_bb
+    percent_b = round((price - lower_bb) / (upper_bb - lower_bb), 3) if (upper_bb - lower_bb) > 0 else 0.5
+
+    high_52w = float(high.tail(252).max())
+    low_52w = float(low.tail(252).min())
+    dist_from_52w_high = round((price - high_52w) / high_52w * 100, 2) if high_52w > 0 else None
+    dist_from_52w_low = round((price - low_52w) / low_52w * 100, 2) if low_52w > 0 else None
+
+    stat_prob = compute_statistical_probability(
+        df1d, rule_score, weekly_rsi, monthly_rsi,
+        option_features.get("pcr") if option_features else None,
+        atr_pct_val
+    )
+    stat_prob_score = stat_prob["probability_up"]
+
+    hit_rate = compute_historical_hit_rate(df1d, lookback=252, forward=5)
+    hit_rate_score = hit_rate["hit_rate_pct"] if hit_rate else 50
+
+    combo_score, combo_meta = compute_combo_score(rule_score, stat_prob, hit_rate)
+
+    final_signal = ("STRONG BUY" if combo_score >= 80 else
+                    "BUY" if combo_score >= 65 else
+                    "STRONG SELL" if combo_score <= 25 else
+                    "SELL" if combo_score <= 40 else "HOLD")
+    confidence_band = "HIGH" if combo_score >= 75 else "MEDIUM" if combo_score >= 60 else "LOW"
 
     bull_count = 0
     for tf_bias in [analysis["1D"]["Bias"] if analysis["1D"] else "NEUTRAL",
@@ -975,11 +1124,98 @@ def engine(symbol, option_features=None, is_index=False):
         if tr == "UP": bull_count += 1
     alignment_pct = round(bull_count / 6 * 100, 1)
 
+    statistical = {
+        "price_z_score_20d": price_z,
+        "rsi_percentile_1y": rsi_percentile,
+        "atr_pct_of_price": atr_pct_val,
+        "bollinger_percent_b": percent_b,
+        "dist_from_52w_high_pct": dist_from_52w_high,
+        "dist_from_52w_low_pct": dist_from_52w_low,
+        "formulas": {
+            "price_z": "(price - mean_20) / std_20",
+            "rsi_pct": "(count of days RSI < current) / total_days × 100",
+            "atr_pct": "(ATR / price) × 100",
+            "percent_b": "(price - lower_BB) / (upper_BB - lower_BB)",
+            "dist_52w_high": "(price - high_52w) / high_52w × 100",
+            "dist_52w_low": "(price - low_52w) / low_52w × 100",
+        }
+    }
+
+    # Position sizing (direction-aware)
+    a1d_data = analysis.get("1D") or {}
+    long_stop = a1d_data.get("risk", {}).get("stop_loss", 0)
+    long_target = a1d_data.get("risk", {}).get("target", 0)
+
+    is_short = final_signal in ("SELL", "STRONG SELL")
+
+    if is_short:
+        atr_implied = (price - long_stop) / 1.5 if long_stop else 0
+        stop_loss_val = round(price + atr_implied * 1.5, 2)
+        target_val = round(price - atr_implied * 3, 2)
+    else:
+        stop_loss_val = long_stop
+        target_val = long_target
+
+    if is_short:
+        risk_per_share = round(stop_loss_val - price, 2) if stop_loss_val else 0
+        reward_per_share = round(price - target_val, 2) if target_val else 0
+    else:
+        risk_per_share = round(price - stop_loss_val, 2) if stop_loss_val else 0
+        reward_per_share = round(target_val - price, 2) if target_val else 0
+    rr_ratio = round(reward_per_share / risk_per_share, 2) if risk_per_share > 0 else 0
+
+    account_size = 100000
+    risk_pct = 1.0
+    risk_amount = account_size * risk_pct / 100
+    suggested_qty = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
+    suggested_capital = round(suggested_qty * price, 2)
+
+    position_sizing = {
+        "entry": round(price, 2),
+        "stop_loss": stop_loss_val,
+        "target": target_val,
+        "direction": "SHORT" if is_short else "LONG",
+        "risk_per_share": risk_per_share,
+        "reward_per_share": reward_per_share,
+        "risk_reward_ratio": rr_ratio,
+        "account_size": account_size,
+        "risk_pct": risk_pct,
+        "risk_amount": round(risk_amount, 2),
+        "suggested_qty": suggested_qty,
+        "suggested_capital": suggested_capital,
+        "formula": "qty = (account × risk_pct/100) / |entry - stop_loss|"
+    }
+
+    bull_layers = sum(1 for r in reasons if "(+" in r)
+    bear_layers = sum(1 for r in reasons if "(-" in r)
+    neutral_layers = len(reasons) - bull_layers - bear_layers
+
+    if final_signal == "STRONG BUY":
+        summary = f"Strong bullish: rule {rule_score:.1f}, stat {stat_prob_score:.1f}, hit rate {hit_rate_score:.1f} → combo {combo_score:.1f}."
+        action = f"LONG at Rs {price:.2f}, stop Rs {stop_loss_val:.2f}, target Rs {target_val:.2f}, qty {suggested_qty} (risk Rs {risk_amount:.0f})."
+    elif final_signal == "BUY":
+        summary = f"Bullish: rule {rule_score:.1f}, stat {stat_prob_score:.1f}, hit rate {hit_rate_score:.1f} → combo {combo_score:.1f}."
+        action = f"Consider LONG at Rs {price:.2f}, stop Rs {stop_loss_val:.2f}, target Rs {target_val:.2f}, qty {suggested_qty}."
+    elif final_signal == "STRONG SELL":
+        summary = f"Strong bearish: rule {rule_score:.1f}, stat {stat_prob_score:.1f}, hit rate {hit_rate_score:.1f} → combo {combo_score:.1f}."
+        action = f"SHORT at Rs {price:.2f}, stop Rs {stop_loss_val:.2f} (above), target Rs {target_val:.2f} (below), qty {suggested_qty} (risk Rs {risk_amount:.0f})."
+    elif final_signal == "SELL":
+        summary = f"Bearish: rule {rule_score:.1f}, stat {stat_prob_score:.1f}, hit rate {hit_rate_score:.1f} → combo {combo_score:.1f}."
+        action = f"Consider SHORT at Rs {price:.2f}, stop Rs {stop_loss_val:.2f} (above), target Rs {target_val:.2f} (below), qty {suggested_qty}."
+    else:
+        summary = f"Mixed: rule {rule_score:.1f}, stat {stat_prob_score:.1f}, hit rate {hit_rate_score:.1f} → combo {combo_score:.1f}. {bull_layers} bull vs {bear_layers} bear layers."
+        action = "No action — wait for a clearer signal."
+
     return {
         "primary_engine": {
             "symbol": symbol,
             "final_signal": final_signal,
-            "confidence_score_%": score,
+            "combo_score": combo_score,
+            "rule_score": rule_score,
+            "stat_prob_score": stat_prob_score,
+            "hit_rate_score": hit_rate_score,
+            "combo_meta": combo_meta,
+            "confidence_score_%": combo_score,
             "scan_score": scan_score,
             "volume_score": vol_score,
             "volume_reasons": vol_reasons,
@@ -996,6 +1232,18 @@ def engine(symbol, option_features=None, is_index=False):
                 "supertrend_1d": st_1d,
                 "supertrend_4h": st_4h,
             },
+            "statistical": statistical,
+            "statistical_probability": stat_prob,
+            "historical_hit_rate": hit_rate,
+            "position_sizing": position_sizing,
+            "layer_breakdown": {
+                "bull_layers": bull_layers,
+                "bear_layers": bear_layers,
+                "neutral_layers": neutral_layers,
+                "total_layers": len(reasons)
+            },
+            "signal_summary": summary,
+            "suggested_action": action,
             "ai_probability_%": {"RF": rf_p, "LSTM": lstm_p},
             "ai_trend": {"RF": rf_t, "LSTM": lstm_t},
             "ai_model": "RandomForest + OptionOI (LSTM disabled in score)",
@@ -1036,7 +1284,7 @@ def history(symbol: str = Query(...), limit: int = 20):
         sym = sym + ".NS"
     conn = sqlite3.connect(DB_PATH)
     cur = conn.execute(
-        "SELECT ts, symbol, signal, score, price, pcr, max_pain_dist, call_oi, put_oi "
+        "SELECT ts, symbol, signal, combo_score, rule_score, stat_prob_score, hit_rate_score, price, pcr, max_pain_dist "
         "FROM signals WHERE symbol = ? ORDER BY id DESC LIMIT ?",
         (sym, limit),
     )
@@ -1047,9 +1295,10 @@ def history(symbol: str = Query(...), limit: int = 20):
         "count": len(rows),
         "rows": [
             {
-                "ts": r[0], "symbol": r[1], "signal": r[2], "score": r[3],
-                "price": r[4], "pcr": r[5], "max_pain_dist": r[6],
-                "call_oi": r[7], "put_oi": r[8],
+                "ts": r[0], "symbol": r[1], "signal": r[2],
+                "combo_score": r[3], "rule_score": r[4],
+                "stat_prob_score": r[5], "hit_rate_score": r[6],
+                "price": r[7], "pcr": r[8], "max_pain_dist": r[9],
             }
             for r in rows
         ],
@@ -1079,6 +1328,49 @@ def oi_change(symbol: str = Query(...)):
         "call_oi_change": call_delta,
         "put_oi_change": put_delta,
         "note": "Positive call OI change = new call writing (bearish). Positive put OI change = new put writing (bullish)."
+    }
+
+
+@app.get("/pcr-change")
+def pcr_change(symbol: str = Query(...)):
+    sym = symbol.upper()
+    if not sym.endswith(".NS") and sym not in INDEX_SYMBOLS:
+        sym = sym + ".NS"
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT ts, pcr FROM signals WHERE symbol = ? AND pcr IS NOT NULL ORDER BY id DESC LIMIT 2",
+        (sym,)
+    ).fetchall()
+    conn.close()
+    if len(rows) < 2:
+        return {"error": "Need at least 2 logged signals with PCR data. Run /analyze twice on different days."}
+    today, yesterday = rows[0], rows[1]
+    today_pcr = today[1]
+    yesterday_pcr = yesterday[1]
+    delta = round(today_pcr - yesterday_pcr, 4) if today_pcr is not None and yesterday_pcr is not None else None
+
+    if delta is None:
+        interpretation = "Insufficient PCR data"
+    elif delta > 0.15:
+        interpretation = "PCR rising fast — fear increasing, potential bottom forming"
+    elif delta < -0.15:
+        interpretation = "PCR falling fast — call writers aggressive, caution on longs"
+    elif delta > 0.05:
+        interpretation = "PCR rising mildly — sentiment improving"
+    elif delta < -0.05:
+        interpretation = "PCR falling mildly — sentiment weakening"
+    else:
+        interpretation = "PCR stable — positioning already priced in"
+
+    return {
+        "symbol": sym,
+        "latest_ts": today[0],
+        "previous_ts": yesterday[0],
+        "latest_pcr": today_pcr,
+        "previous_pcr": yesterday_pcr,
+        "pcr_change": delta,
+        "interpretation": interpretation,
+        "note": "PCR change > 0.15 (rising) = fear building, contrarian bullish. < -0.15 (falling) = call writing aggressive, cautious.",
     }
 
 
@@ -1173,18 +1465,20 @@ def scanner():
         {
             "symbol": r["primary_engine"]["symbol"],
             "signal": r["primary_engine"]["final_signal"],
-            "confidence_score": r["primary_engine"]["confidence_score_%"],
+            "combo_score": r["primary_engine"]["combo_score"],
+            "rule_score": r["primary_engine"]["rule_score"],
+            "stat_prob_score": r["primary_engine"]["stat_prob_score"],
+            "hit_rate_score": r["primary_engine"]["hit_rate_score"],
             "scan_score": r["primary_engine"]["scan_score"],
-            "volume_score": r["primary_engine"]["volume_score"],
             "alignment_pct": r["primary_engine"]["alignment_pct"],
             "data": r
         } for r in results
     ]
 
     return {
-        "TOP_BUY": sorted(scored, key=lambda x: x["scan_score"], reverse=True)[:10],
-        "TOP_SELL": sorted(scored, key=lambda x: x["scan_score"])[:10],
-        "TOP_BY_CONFIDENCE": sorted(scored, key=lambda x: x["confidence_score"], reverse=True)[:10],
+        "TOP_BUY": sorted(scored, key=lambda x: x["combo_score"], reverse=True)[:10],
+        "TOP_SELL": sorted(scored, key=lambda x: x["combo_score"])[:10],
+        "TOP_BY_CONFIDENCE": sorted(scored, key=lambda x: x["combo_score"], reverse=True)[:10],
         "TOTAL_SCANNED": len(scored)
     }
 
