@@ -2,8 +2,7 @@
 DeepGenny — Unified Market Analysis & Trading Signal Engine
 Built by: Ganesh + AI assistant
 ====================================================
-Local SQLite signal logging (signals.db).
-For Render free: use Turso instead (see db.py notes).
+Supertrend + Weekly/Monthly RSI (60/40) + VWAP + OI tracking
 """
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,9 +53,17 @@ def init_db():
             price REAL,
             pcr REAL,
             max_pain_dist REAL,
-            overbought INTEGER
+            overbought INTEGER,
+            call_oi REAL,
+            put_oi REAL
         )
     """)
+    # Add new columns if table already exists (migration)
+    for col in ["call_oi", "put_oi"]:
+        try:
+            conn.execute(f"ALTER TABLE signals ADD COLUMN {col} REAL")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -71,8 +78,8 @@ def log_signal(result):
 
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
-        "INSERT INTO signals (ts, symbol, signal, score, scan_score, price, pcr, max_pain_dist, overbought) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO signals (ts, symbol, signal, score, scan_score, price, pcr, max_pain_dist, overbought, call_oi, put_oi) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             datetime.utcnow().isoformat(),
             p.get("symbol"),
@@ -83,6 +90,8 @@ def log_signal(result):
             opt.get("pcr"),
             opt.get("max_pain_dist_pct"),
             overbought,
+            opt.get("total_call_oi"),
+            opt.get("total_put_oi"),
         ),
     )
     conn.commit()
@@ -130,10 +139,10 @@ MODEL_DIR = "lstm_models"
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 
-def fetch_yahoo_df(symbol, interval="1d", range_period="2y"):
+def fetch_yahoo_df(symbol, interval="1d", range_period="5y"):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={interval}&range={range_period}"
     try:
-        r = SESSION.get(url, timeout=15)
+        r = SESSION.get(url, timeout=20)
         if r.status_code != 200:
             return None
         data = r.json()
@@ -228,6 +237,141 @@ def regression_trend(series, min_points=60):
     return "SIDEWAYS"
 
 
+def supertrend_direction(df, atr_period=10, multiplier=3.0):
+    if df is None or len(df) < atr_period + 2:
+        return "UNKNOWN"
+    high = df["High"]
+    low = df["Low"]
+    close = df["Close"]
+    tr = pd.concat([
+        high - low,
+        (high - close.shift()).abs(),
+        (low - close.shift()).abs()
+    ], axis=1).max(axis=1)
+    atr_s = tr.ewm(alpha=1/atr_period, min_periods=atr_period).mean()
+    hl2 = (high + low) / 2
+    upper = hl2 + multiplier * atr_s
+    lower = hl2 - multiplier * atr_s
+    st = [True] * len(df)
+    for i in range(1, len(df)):
+        if close.iloc[i] > upper.iloc[i-1]:
+            st[i] = True
+        elif close.iloc[i] < lower.iloc[i-1]:
+            st[i] = False
+        else:
+            st[i] = st[i-1]
+    return "GREEN" if st[-1] else "RED"
+
+
+def detect_engulfing(df):
+    if df is None or len(df) < 3:
+        return False, False
+    prev = df.iloc[-2]
+    curr = df.iloc[-1]
+    prev_open, prev_close = float(prev["Open"]), float(prev["Close"])
+    curr_open, curr_close = float(curr["Open"]), float(curr["Close"])
+
+    prev_bearish = prev_close < prev_open
+    prev_bullish = prev_close > prev_open
+    curr_bullish = curr_close > curr_open
+    curr_bearish = curr_close < curr_open
+
+    bullish_engulfing = bool(
+        prev_bearish and curr_bullish
+        and curr_open <= prev_close and curr_close >= prev_open
+    )
+    bearish_engulfing = bool(
+        prev_bullish and curr_bearish
+        and curr_open >= prev_close and curr_close <= prev_open
+    )
+    return bullish_engulfing, bearish_engulfing
+
+
+def detect_breakout(df):
+    if df is None or len(df) < 22:
+        return False, False, None, None
+    prev_20_high = float(df["High"].iloc[-22:-2].max())
+    prev_20_low = float(df["Low"].iloc[-22:-2].min())
+    prev_close = float(df["Close"].iloc[-2])
+    curr_close = float(df["Close"].iloc[-1])
+    breakout_up = bool(prev_close <= prev_20_high and curr_close > prev_20_high)
+    breakout_down = bool(prev_close >= prev_20_low and curr_close < prev_20_low)
+    return breakout_up, breakout_down, prev_20_high, prev_20_low
+
+
+def compute_volume_score(analysis):
+    v_score = 0.0
+    v_reasons = []
+
+    a1d = analysis.get("1D")
+    a4h = analysis.get("4H")
+    a1h = analysis.get("1H")
+
+    if a1d:
+        vr = a1d.get("Volume_ratio", 1.0)
+        vt = a1d.get("Volume_trend_5d", 1.0)
+        day_bull = a1d.get("Day_bullish", True)
+
+        if vr >= 3.0:
+            if day_bull:
+                v_score += 6
+                v_reasons.append(f"1D Volume spike {vr:.1f}x average on bullish day (+6)")
+            else:
+                v_score -= 6
+                v_reasons.append(f"1D Volume spike {vr:.1f}x average on bearish day (-6)")
+        elif vr >= 1.5:
+            if day_bull:
+                v_score += 4
+                v_reasons.append(f"1D Volume {vr:.1f}x average on bullish day (+4)")
+            else:
+                v_score -= 4
+                v_reasons.append(f"1D Volume {vr:.1f}x average on bearish day (-4)")
+        elif vr < 0.5:
+            v_score -= 3
+            v_reasons.append(f"1D Volume only {vr:.1f}x average — weak participation (-3)")
+
+        if vt >= 1.3 and day_bull:
+            v_score += 3
+            v_reasons.append(f"1D 5-day volume rising ({vt:.1f}x 20-day avg) on up move (+3)")
+        elif vt < 0.7 and day_bull:
+            v_score -= 2
+            v_reasons.append(f"1D 5-day volume falling ({vt:.1f}x) on up move — exhaustion (-2)")
+
+    if a4h:
+        vr4 = a4h.get("Volume_ratio", 1.0)
+        bull4 = a4h.get("Day_bullish", True)
+        if vr4 >= 1.5 and bull4:
+            v_score += 3
+            v_reasons.append(f"4H Volume {vr4:.1f}x on bullish bar (+3)")
+        elif vr4 >= 1.5 and not bull4:
+            v_score -= 3
+            v_reasons.append(f"4H Volume {vr4:.1f}x on bearish bar (-3)")
+        elif vr4 < 0.5:
+            v_score -= 1
+            v_reasons.append(f"4H Volume only {vr4:.1f}x — weak bar (-1)")
+
+    if a1h:
+        vr1 = a1h.get("Volume_ratio", 1.0)
+        bull1 = a1h.get("Day_bullish", True)
+        if vr1 >= 2.0 and bull1:
+            v_score += 2
+            v_reasons.append(f"1H Volume surge {vr1:.1f}x on bullish bar (+2)")
+        elif vr1 >= 2.0 and not bull1:
+            v_score -= 2
+            v_reasons.append(f"1H Volume surge {vr1:.1f}x on bearish bar (-2)")
+
+    if a1d and a4h and a1h:
+        bulls = [a1d.get("Day_bullish"), a4h.get("Day_bullish"), a1h.get("Day_bullish")]
+        if all(b is True for b in bulls):
+            v_score += 2
+            v_reasons.append("All 3 timeframes closed above open (+2)")
+        elif all(b is False for b in bulls):
+            v_score -= 2
+            v_reasons.append("All 3 timeframes closed below open (-2)")
+
+    return round(v_score, 2), v_reasons
+
+
 def rf_engine(df, option_features=None):
     df = df.copy()
     df["EMA20"] = ema(df["Close"], 20)
@@ -306,6 +450,7 @@ def prepare_analysis(df):
         return None
     close = df["Close"]
     price = float(close.iloc[-1])
+    open_price = float(df["Open"].iloc[-1]) if "Open" in df.columns else price
     volume = int(df["Volume"].iloc[-1]) if float(df["Volume"].iloc[-1]) > 0 else 0
 
     df["EMA5"] = ema(close, 5)
@@ -314,6 +459,8 @@ def prepare_analysis(df):
     df["EMA20"] = ema(close, 20)
     df["EMA21"] = ema(close, 21)
     df["VWAP"] = vwap(df)
+    df["VOL_AVG"] = df["Volume"].rolling(20).mean()
+    df["VOL_5D_AVG"] = df["Volume"].rolling(5).mean()
 
     rsi_series = rsi(close)
     rsi_val = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50
@@ -323,6 +470,19 @@ def prepare_analysis(df):
     k_val = float(k_perc.iloc[-1]) if not k_perc.empty else 50
     atr_series = atr(df)
     atr_v = float(atr_series.iloc[-1]) if not atr_series.empty else 0
+
+    vol_avg_last = float(df["VOL_AVG"].iloc[-1]) if not pd.isna(df["VOL_AVG"].iloc[-1]) else 0.0
+    vol_ratio = round(volume / vol_avg_last, 2) if vol_avg_last > 0 else 1.0
+    vol_5d_avg = float(df["VOL_5D_AVG"].iloc[-1]) if not pd.isna(df["VOL_5D_AVG"].iloc[-1]) else vol_avg_last
+    vol_trend = round(vol_5d_avg / vol_avg_last, 2) if vol_avg_last > 0 else 1.0
+    vol_spike = bool(vol_ratio >= 3.0)
+
+    day_bullish = bool(price > open_price)
+    day_range_pct = round((float(df["High"].iloc[-1]) - float(df["Low"].iloc[-1])) / open_price * 100, 2) if open_price > 0 else 0
+    body_pct = round(abs(price - open_price) / open_price * 100, 2) if open_price > 0 else 0
+
+    breakout_up, breakout_down, prev_20_high, prev_20_low = detect_breakout(df)
+    bull_engulfing, bear_engulfing = detect_engulfing(df)
 
     dow, wave = dow_wave(df)
     bias = "UP" if float(df["EMA5"].iloc[-1]) > float(df["EMA20"].iloc[-1]) else "DOWN"
@@ -349,10 +509,8 @@ def prepare_analysis(df):
     )
 
     piv = pivot_points(df)
-
     stop_loss = round(price - atr_v * 1.5, 2)
     target = round(price + atr_v * 3, 2)
-
     ret = df["Close"].pct_change().fillna(0)
     equity = (1 + ret).cumprod().tolist()[-50:]
 
@@ -365,12 +523,24 @@ def prepare_analysis(df):
     if vwap_cross_down: reasons.append("VWAP Cross Down")
     if ema_cross_up: reasons.append("EMA 9/21 Cross Up")
     if ema_cross_down: reasons.append("EMA 9/21 Cross Down")
+    if bull_engulfing: reasons.append("Bullish Engulfing")
+    if bear_engulfing: reasons.append("Bearish Engulfing")
+    if breakout_up: reasons.append(f"Fresh breakout above {round(prev_20_high,2)}")
+    if breakout_down: reasons.append(f"Fresh breakdown below {round(prev_20_low,2)}")
 
     vwap_val = float(df["VWAP"].iloc[-1]) if not pd.isna(df["VWAP"].iloc[-1]) else price
 
     return {
         "Price": round(price, 2),
+        "Open": round(open_price, 2),
+        "Day_bullish": day_bullish,
+        "Body_pct": body_pct,
+        "Day_range_pct": day_range_pct,
         "Volume": volume,
+        "Volume_avg": round(vol_avg_last, 0),
+        "Volume_ratio": vol_ratio,
+        "Volume_trend_5d": vol_trend,
+        "Volume_spike": vol_spike,
         "VWAP": round(vwap_val, 2),
         "EMA5": round(float(df["EMA5"].iloc[-1]), 2),
         "EMA9": round(float(df["EMA9"].iloc[-1]), 2),
@@ -382,6 +552,12 @@ def prepare_analysis(df):
         "VWAP_cross_down": vwap_cross_down,
         "EMA_cross_up": ema_cross_up,
         "EMA_cross_down": ema_cross_down,
+        "Bull_engulfing": bull_engulfing,
+        "Bear_engulfing": bear_engulfing,
+        "Breakout_up": breakout_up,
+        "Breakout_down": breakout_down,
+        "Prev_20_high": round(prev_20_high, 2) if prev_20_high else None,
+        "Prev_20_low": round(prev_20_low, 2) if prev_20_low else None,
         "pivots": piv,
         "Indicators": {
             "RSI": round(rsi_val, 2),
@@ -397,7 +573,9 @@ def prepare_analysis(df):
     }
 
 
-def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt, is_index):
+def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt, is_index,
+                  weekly_rsi=50, monthly_rsi=50, weekly_above_vwap=False, monthly_above_vwap=False,
+                  st_1d="UNKNOWN", st_4h="UNKNOWN"):
     score = 50.0
     reasons = []
 
@@ -409,6 +587,7 @@ def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt,
     bias_4h = a4h["Bias"] if a4h else "NEUTRAL"
     bias_1h = a1h["Bias"] if a1h else "NEUTRAL"
 
+    # Layer 1: Trend alignment
     if bias_1d == "UP" and bias_4h == "UP" and bias_1h == "UP":
         score += 15
         reasons.append("Trend alignment: 1D + 4H + 1H all UP (+15)")
@@ -426,6 +605,7 @@ def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt,
     elif bias_1d == "DOWN" and bias_4h != "DOWN":
         reasons.append("Trend alignment: 1D DOWN only, 4H mixed (0)")
 
+    # Layer 2: Long-term context
     if daily_trend == "UP" and weekly_trend == "UP" and monthly_trend == "UP":
         score += 10
         reasons.append("Long-term trends (D/W/M) all UP (+10)")
@@ -433,6 +613,53 @@ def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt,
         score -= 10
         reasons.append("Long-term trends (D/W/M) all DOWN (-10)")
 
+    # Layer 2b: Supertrend filter
+    if st_1d == "GREEN" and st_4h == "GREEN":
+        score += 5
+        reasons.append("Supertrend green on 1D + 4H (+5)")
+    elif st_1d == "RED" and st_4h == "RED":
+        score -= 5
+        reasons.append("Supertrend red on 1D + 4H (-5)")
+    elif st_1d == "GREEN" and st_4h == "RED":
+        reasons.append("Supertrend divergence: 1D green, 4H red (0)")
+    elif st_1d == "RED" and st_4h == "GREEN":
+        reasons.append("Supertrend divergence: 1D red, 4H green (0)")
+
+    # Layer 2c: Higher timeframe RSI regime filter (60/40)
+    if weekly_rsi > 60:
+        score += 4
+        reasons.append(f"Weekly RSI {weekly_rsi:.1f} > 60 — bullish regime (+4)")
+    elif weekly_rsi < 40:
+        score -= 4
+        reasons.append(f"Weekly RSI {weekly_rsi:.1f} < 40 — bearish regime (-4)")
+    else:
+        reasons.append(f"Weekly RSI {weekly_rsi:.1f} — neutral regime (0)")
+
+    if monthly_rsi > 60:
+        score += 5
+        reasons.append(f"Monthly RSI {monthly_rsi:.1f} > 60 — long-term bullish (+5)")
+    elif monthly_rsi < 40:
+        score -= 5
+        reasons.append(f"Monthly RSI {monthly_rsi:.1f} < 40 — long-term bearish (-5)")
+    else:
+        reasons.append(f"Monthly RSI {monthly_rsi:.1f} — neutral long-term (0)")
+
+    # Layer 2d: Higher timeframe VWAP
+    if weekly_above_vwap:
+        score += 3
+        reasons.append("Weekly close above weekly VWAP (+3)")
+    else:
+        score -= 3
+        reasons.append("Weekly close below weekly VWAP (-3)")
+
+    if monthly_above_vwap:
+        score += 4
+        reasons.append("Monthly close above monthly VWAP (+4)")
+    else:
+        score -= 4
+        reasons.append("Monthly close below monthly VWAP (-4)")
+
+    # Layer 3: Quick triggers (crosses)
     if a1d:
         if a1d["VWAP_cross_up"]:
             score += 8
@@ -447,45 +674,123 @@ def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt,
             score -= 6
             reasons.append("EMA 9/21 cross DOWN today (-6)")
 
+    # Layer 4: Precision breakout (volume-gated, recency-checked, multi-TF)
+    if a1d and a4h and a1h:
+        d_break_up = a1d.get("Breakout_up", False)
+        d_break_down = a1d.get("Breakout_down", False)
+        d_vol_ok = a1d.get("Volume_ratio", 1.0) >= 1.3
+        d_bull = a1d.get("Day_bullish", False)
+        d_bias = a1d.get("Bias") == "UP"
+        d_conf = d_bull and d_bias
+
+        h4_break_up = a4h.get("Breakout_up", False)
+        h4_break_down = a4h.get("Breakout_down", False)
+        h4_bull = a4h.get("Day_bullish", False)
+        h4_bias = a4h.get("Bias") == "UP"
+        h4_conf = h4_bull and h4_bias
+
+        h1_break_up = a1h.get("Breakout_up", False)
+        h1_break_down = a1h.get("Breakout_down", False)
+
+        if d_break_up and d_vol_ok and d_conf:
+            score += 10
+            reasons.append("1D breakout + volume + bullish structure (+10)")
+            if h4_conf:
+                score += 3
+                reasons.append("4H confirms breakout (+3)")
+            if h1_break_up:
+                score += 2
+                reasons.append("1H also broke out (+2)")
+        elif h4_break_up and h4_conf and d_conf:
+            score += 5
+            reasons.append("4H breakout + 1D structure confirms (+5)")
+        elif h1_break_up:
+            if h4_conf:
+                score += 3
+                reasons.append("1H breakout + 4H confirms (weak, +3)")
+            else:
+                reasons.append("1H breakout but 4H bearish — no score (0)")
+
+        if d_break_down and d_vol_ok and not d_conf:
+            score -= 10
+            reasons.append("1D breakdown + volume + bearish structure (-10)")
+            if not h4_conf:
+                score -= 3
+                reasons.append("4H confirms breakdown (-3)")
+            if h1_break_down:
+                score -= 2
+                reasons.append("1H also broke down (-2)")
+        elif h4_break_down and not h4_conf and not d_conf:
+            score -= 5
+            reasons.append("4H breakdown + 1D structure confirms (-5)")
+        elif h1_break_down:
+            if not h4_conf:
+                score -= 3
+                reasons.append("1H breakdown + 4H confirms (weak, -3)")
+            else:
+                reasons.append("1H breakdown but 4H bullish — no score (0)")
+
+    # Layer 5: Volume + open/close across timeframes
+    vol_score, vol_reasons = compute_volume_score(analysis)
+    score += vol_score
+    for r in vol_reasons:
+        reasons.append(r)
+
+    # Layer 6: Engulfing at pivots
+    if a1d and a1d.get("pivots"):
+        piv = a1d["pivots"]
+        px = a1d["Price"]
+        S1, R1 = piv["S1"], piv["R1"]
+        near_s1 = abs(px - S1) / px < 0.005
+        near_r1 = abs(px - R1) / px < 0.005
+        if a1d.get("Bull_engulfing") and near_s1:
+            score += 6
+            reasons.append(f"Bullish Engulfing at S1 support {S1} (+6)")
+        if a1d.get("Bear_engulfing") and near_r1:
+            score -= 6
+            reasons.append(f"Bearish Engulfing at R1 resistance {R1} (-6)")
+
+    # Layer 7: Option sentiment
     if opt:
         pcr = opt.get("pcr")
         if pcr is not None:
             if is_index:
                 if pcr < 0.7:
                     score += 8
-                    reasons.append(f"PCR {pcr:.2f} - index fear extreme, contrarian bullish (+8)")
+                    reasons.append(f"PCR {pcr:.2f} — index fear extreme, contrarian bullish (+8)")
                 elif pcr < 0.9:
                     score += 4
-                    reasons.append(f"PCR {pcr:.2f} - mild index fear (+4)")
+                    reasons.append(f"PCR {pcr:.2f} — mild index fear (+4)")
                 elif pcr > 1.5:
                     score -= 8
-                    reasons.append(f"PCR {pcr:.2f} - index greed extreme, contrarian bearish (-8)")
+                    reasons.append(f"PCR {pcr:.2f} — index greed extreme, contrarian bearish (-8)")
                 elif pcr > 1.3:
                     score -= 4
-                    reasons.append(f"PCR {pcr:.2f} - mild index greed (-4)")
+                    reasons.append(f"PCR {pcr:.2f} — mild index greed (-4)")
             else:
                 if pcr < 0.7:
                     score -= 6
-                    reasons.append(f"PCR {pcr:.2f} - call writers dominant, bearish (-6)")
+                    reasons.append(f"PCR {pcr:.2f} — call writers dominant, bearish (-6)")
                 elif pcr < 0.9:
                     score -= 3
-                    reasons.append(f"PCR {pcr:.2f} - call OI heavier (-3)")
+                    reasons.append(f"PCR {pcr:.2f} — call OI heavier (-3)")
                 elif pcr > 1.3:
                     score += 6
-                    reasons.append(f"PCR {pcr:.2f} - put writers dominant, bullish (+6)")
+                    reasons.append(f"PCR {pcr:.2f} — put writers dominant, bullish (+6)")
                 elif pcr > 1.1:
                     score += 3
-                    reasons.append(f"PCR {pcr:.2f} - put OI heavier (+3)")
+                    reasons.append(f"PCR {pcr:.2f} — put OI heavier (+3)")
 
         mpd = opt.get("max_pain_dist_pct")
         if mpd is not None:
             if mpd > 1.5:
                 score += 5
-                reasons.append(f"Spot {mpd:+.1f}% below Max Pain - upward pull (+5)")
+                reasons.append(f"Spot {mpd:+.1f}% below Max Pain — upward pull (+5)")
             elif mpd < -1.5:
                 score -= 5
-                reasons.append(f"Spot {mpd:+.1f}% above Max Pain - downward pull (-5)")
+                reasons.append(f"Spot {mpd:+.1f}% above Max Pain — downward pull (-5)")
 
+    # Layer 8: Pivot location
     if a1d and a1d.get("pivots"):
         piv = a1d["pivots"]
         px = a1d["Price"]
@@ -503,21 +808,24 @@ def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt,
             score += 4
             reasons.append(f"Price near S1 support {S1} (+4)")
 
+    # Layer 9: Machine probability
     rf_contrib = (50 - rf_p) * 0.1
     score += rf_contrib
     if abs(rf_contrib) >= 1:
         d = "bullish" if rf_contrib > 0 else "bearish"
-        reasons.append(f"RF P(down) {rf_p:.1f}% - {d} ({rf_contrib:+.1f})")
+        reasons.append(f"RF P(down) {rf_p:.1f}% — {d} ({rf_contrib:+.1f})")
 
+    # Layer 10: RSI extreme on 1D
     if a1d:
         rsi_val = a1d["Indicators"]["RSI"]
         if rsi_val > 70:
             score -= 5
-            reasons.append(f"1D RSI {rsi_val:.1f} - overbought (-5)")
+            reasons.append(f"1D RSI {rsi_val:.1f} — overbought (-5)")
         elif rsi_val < 30:
             score += 5
-            reasons.append(f"1D RSI {rsi_val:.1f} - oversold (+5)")
+            reasons.append(f"1D RSI {rsi_val:.1f} — oversold (+5)")
 
+    # Layer 11: Multi-timeframe overbought/oversold
     extremes = 0
     if a1d and a1d["Indicators"]["RSI"] > 70: extremes += 1
     if a1d and a1d["Indicators"]["Stochastic_%K"] > 90: extremes += 1
@@ -536,13 +844,14 @@ def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt,
         score += 5
         reasons.append(f"Multi-timeframe oversold ({oversold} indicators) (+5)")
 
+    # Conflict penalties
     if a1d:
         if a1d["VWAP_cross_up"] and monthly_trend == "DOWN":
             score -= 5
-            reasons.append("VWAP cross UP against monthly DOWN - conflict (-5)")
+            reasons.append("VWAP cross UP against monthly DOWN — conflict (-5)")
         if a1d["VWAP_cross_down"] and monthly_trend == "UP":
             score -= 5
-            reasons.append("VWAP cross DOWN against monthly UP - conflict (-5)")
+            reasons.append("VWAP cross DOWN against monthly UP — conflict (-5)")
 
     score = max(0.0, min(100.0, score))
     return round(score, 2), reasons
@@ -551,6 +860,7 @@ def compute_score(analysis, daily_trend, weekly_trend, monthly_trend, rf_p, opt,
 def compute_scan_score(analysis, opt, is_index):
     s = 0.0
     a1d = analysis.get("1D")
+    a4h = analysis.get("4H")
     if not a1d:
         return 0.0
 
@@ -558,6 +868,15 @@ def compute_scan_score(analysis, opt, is_index):
     if a1d["EMA_cross_up"]:    s += 15
     if a1d["VWAP_cross_down"]: s -= 20
     if a1d["EMA_cross_down"]:  s -= 15
+
+    d_vol_ok = a1d.get("Volume_ratio", 1.0) >= 1.3
+    if a1d.get("Breakout_up") and d_vol_ok:
+        s += 15
+    if a1d.get("Breakout_down") and d_vol_ok:
+        s -= 15
+
+    vol_score, _ = compute_volume_score(analysis)
+    s += vol_score
 
     if opt:
         pcr = opt.get("pcr")
@@ -573,7 +892,6 @@ def compute_scan_score(analysis, opt, is_index):
     if rsi_val < 30:  s += 10
     elif rsi_val > 70: s -= 10
 
-    a4h = analysis.get("4H")
     if a4h and a1d["Bias"] == "UP" and a4h["Bias"] == "UP":
         s += 5
     if a4h and a1d["Bias"] == "DOWN" and a4h["Bias"] == "DOWN":
@@ -583,7 +901,7 @@ def compute_scan_score(analysis, opt, is_index):
 
 
 def engine(symbol, option_features=None, is_index=False):
-    df1d = fetch_yahoo_df(symbol, interval="1d", range_period="2y")
+    df1d = fetch_yahoo_df(symbol, interval="1d", range_period="5y")
     df4h = fetch_yahoo_df(symbol, interval="4h", range_period="120d")
     df1h = fetch_yahoo_df(symbol, interval="60m", range_period="60d")
     if df1d is None:
@@ -599,12 +917,48 @@ def engine(symbol, option_features=None, is_index=False):
     weekly_trend = regression_trend(df1d["Close"].resample("W").last(), min_points=20)
     monthly_trend = regression_trend(df1d["Close"].resample("ME").last(), min_points=12)
 
+    # Supertrend
+    st_1d = supertrend_direction(df1d)
+    st_4h = supertrend_direction(df4h)
+
+    # Weekly / Monthly RSI
+    weekly_close = df1d["Close"].resample("W").last().dropna()
+    monthly_close = df1d["Close"].resample("ME").last().dropna()
+
+    weekly_rsi_series = rsi(weekly_close)
+    weekly_rsi = float(weekly_rsi_series.iloc[-1]) if not weekly_rsi_series.empty else 50
+
+    monthly_rsi_series = rsi(monthly_close)
+    monthly_rsi = float(monthly_rsi_series.iloc[-1]) if not monthly_rsi_series.empty else 50
+
+    # Weekly / Monthly VWAP
+    weekly_df = df1d.resample("W").agg({
+        "Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"
+    }).dropna()
+    weekly_vwap_series = vwap(weekly_df)
+    weekly_vwap = float(weekly_vwap_series.iloc[-1]) if not weekly_vwap_series.empty and not pd.isna(weekly_vwap_series.iloc[-1]) else float(weekly_close.iloc[-1])
+
+    monthly_df = df1d.resample("ME").agg({
+        "Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"
+    }).dropna()
+    monthly_vwap_series = vwap(monthly_df)
+    monthly_vwap = float(monthly_vwap_series.iloc[-1]) if not monthly_vwap_series.empty and not pd.isna(monthly_vwap_series.iloc[-1]) else float(monthly_close.iloc[-1])
+
+    weekly_above_vwap = bool(float(weekly_close.iloc[-1]) > weekly_vwap) if len(weekly_close) > 0 else False
+    monthly_above_vwap = bool(float(monthly_close.iloc[-1]) > monthly_vwap) if len(monthly_close) > 0 else False
+
     rf_p, rf_t = rf_engine(df1d, option_features)
     lstm_p, lstm_t = lstm_engine(symbol, df1d)
 
-    score, reasons = compute_score(analysis, daily_trend, weekly_trend, monthly_trend,
-                                    rf_p, option_features, is_index)
+    score, reasons = compute_score(
+        analysis, daily_trend, weekly_trend, monthly_trend,
+        rf_p, option_features, is_index,
+        weekly_rsi, monthly_rsi,
+        weekly_above_vwap, monthly_above_vwap,
+        st_1d, st_4h
+    )
     scan_score = compute_scan_score(analysis, option_features, is_index)
+    vol_score, vol_reasons = compute_volume_score(analysis)
 
     final_signal = ("STRONG BUY" if score >= 80 else
                     "BUY" if score >= 65 else
@@ -627,9 +981,21 @@ def engine(symbol, option_features=None, is_index=False):
             "final_signal": final_signal,
             "confidence_score_%": score,
             "scan_score": scan_score,
+            "volume_score": vol_score,
+            "volume_reasons": vol_reasons,
             "confidence_band": confidence_band,
             "alignment_pct": alignment_pct,
             "score_reasons": reasons,
+            "higher_tf": {
+                "weekly_rsi": round(weekly_rsi, 2),
+                "monthly_rsi": round(monthly_rsi, 2),
+                "weekly_vwap": round(weekly_vwap, 2),
+                "monthly_vwap": round(monthly_vwap, 2),
+                "weekly_above_vwap": weekly_above_vwap,
+                "monthly_above_vwap": monthly_above_vwap,
+                "supertrend_1d": st_1d,
+                "supertrend_4h": st_4h,
+            },
             "ai_probability_%": {"RF": rf_p, "LSTM": lstm_p},
             "ai_trend": {"RF": rf_t, "LSTM": lstm_t},
             "ai_model": "RandomForest + OptionOI (LSTM disabled in score)",
@@ -670,7 +1036,7 @@ def history(symbol: str = Query(...), limit: int = 20):
         sym = sym + ".NS"
     conn = sqlite3.connect(DB_PATH)
     cur = conn.execute(
-        "SELECT ts, symbol, signal, score, price, pcr, max_pain_dist "
+        "SELECT ts, symbol, signal, score, price, pcr, max_pain_dist, call_oi, put_oi "
         "FROM signals WHERE symbol = ? ORDER BY id DESC LIMIT ?",
         (sym, limit),
     )
@@ -683,9 +1049,36 @@ def history(symbol: str = Query(...), limit: int = 20):
             {
                 "ts": r[0], "symbol": r[1], "signal": r[2], "score": r[3],
                 "price": r[4], "pcr": r[5], "max_pain_dist": r[6],
+                "call_oi": r[7], "put_oi": r[8],
             }
             for r in rows
         ],
+    }
+
+
+@app.get("/oi-change")
+def oi_change(symbol: str = Query(...)):
+    sym = symbol.upper()
+    if not sym.endswith(".NS"):
+        sym += ".NS"
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT ts, call_oi, put_oi FROM signals WHERE symbol = ? AND call_oi IS NOT NULL ORDER BY id DESC LIMIT 2",
+        (sym,)
+    ).fetchall()
+    conn.close()
+    if len(rows) < 2:
+        return {"error": "Need at least 2 logged signals with OI data"}
+    today, yesterday = rows[0], rows[1]
+    call_delta = (today[1] - yesterday[1]) if today[1] is not None and yesterday[1] is not None else None
+    put_delta = (today[2] - yesterday[2]) if today[2] is not None and yesterday[2] is not None else None
+    return {
+        "symbol": sym,
+        "latest_ts": today[0],
+        "previous_ts": yesterday[0],
+        "call_oi_change": call_delta,
+        "put_oi_change": put_delta,
+        "note": "Positive call OI change = new call writing (bearish). Positive put OI change = new put writing (bullish)."
     }
 
 
@@ -782,6 +1175,7 @@ def scanner():
             "signal": r["primary_engine"]["final_signal"],
             "confidence_score": r["primary_engine"]["confidence_score_%"],
             "scan_score": r["primary_engine"]["scan_score"],
+            "volume_score": r["primary_engine"]["volume_score"],
             "alignment_pct": r["primary_engine"]["alignment_pct"],
             "data": r
         } for r in results
