@@ -92,6 +92,136 @@ li{ margin:4px 0; font-size:13px; }
     background:var(--accent-soft); padding:1px 7px; border-radius:8px;
     font-weight:600; margin-left:8px; }
 
+/* ---------- Trader Summary ---------- */
+.trader-summary{
+    background: linear-gradient(135deg, var(--card) 0%, var(--card-hover) 100%);
+    border: 2px solid var(--accent);
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin-bottom: 16px;
+    box-shadow: 0 4px 16px rgba(157,60,90,0.15);
+}
+.trader-summary .ts-header{
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+.trader-summary .ts-symbol{
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--accent);
+}
+.trader-summary .ts-signal{
+    font-size: 16px;
+    font-weight: 700;
+    padding: 4px 14px;
+    border-radius: 16px;
+}
+.trader-summary .ts-price{
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text);
+}
+.trader-summary .ts-score-wrap{
+    flex: 1;
+    min-width: 200px;
+    max-width: 300px;
+}
+.trader-summary .ts-score-label{
+    font-size: 12px;
+    color: var(--text-soft);
+    margin-bottom: 4px;
+}
+.trader-summary .ts-score-bar{
+    position: relative;
+    height: 24px;
+    background: #e5e7eb;
+    border-radius: 12px;
+    overflow: hidden;
+}
+.trader-summary .ts-score-fill{
+    height: 100%;
+    border-radius: 12px;
+    transition: width 0.5s ease;
+}
+.trader-summary .ts-score-fill.bull{ background: linear-gradient(90deg, #a5d6a7, #2e7d32); }
+.trader-summary .ts-score-fill.bear{ background: linear-gradient(90deg, #ef9a9a, #b71c1c); }
+.trader-summary .ts-score-fill.hold{ background: linear-gradient(90deg, #cfcfcf, #757575); }
+.trader-summary .ts-score-marker{
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--text);
+}
+.trader-summary .ts-score-value{
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--accent);
+}
+.trader-summary .ts-trade{
+    margin-top: 14px;
+    padding: 12px 16px;
+    background: #ffffff;
+    border-radius: 8px;
+    border-left: 4px solid var(--accent);
+}
+.trader-summary .ts-direction{
+    font-size: 18px;
+    font-weight: 700;
+}
+.trader-summary .ts-direction.buy{ color: var(--buy-text); }
+.trader-summary .ts-direction.sell{ color: var(--sell-text); }
+.trader-summary .ts-direction.hold{ color: var(--hold-text); }
+.trader-summary .ts-levels{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+    margin-top: 8px;
+    font-size: 14px;
+}
+.trader-summary .ts-levels b{ color: var(--accent); }
+.trader-summary .ts-levels .dist{
+    font-size: 12px;
+    color: var(--text-soft);
+    font-weight: 500;
+}
+.trader-summary .ts-trend{
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-soft);
+    font-size: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    align-items: center;
+}
+.trader-summary .ts-trend-item{
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.trader-summary .ts-warnings{
+    margin-top: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.trader-summary .ts-warning{
+    background: #fff3e0;
+    color: #bf360c;
+    border: 1px solid #ffb74d;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
 .section-divider{ height:1px; background:var(--accent-soft); margin:16px 0; }
 
 @media(max-width:600px){
@@ -266,6 +396,91 @@ async function analyze(sym){
     renderAnalysis(data.primary_engine);
 }
 
+/* ---------- Trader summary card ---------- */
+function renderTraderSummary(p){
+    const posSize = p.position_sizing || {};
+    const statProb = p.statistical_probability || {};
+    const comboScore = Number(p.combo_score) || 0;
+
+    let fillCls = "hold";
+    if(comboScore >= 65) fillCls = "bull";
+    else if(comboScore <= 40) fillCls = "bear";
+
+    const dir = (posSize.direction || "HOLD").toUpperCase();
+    const dirCls = dir === "LONG" ? "buy" : dir === "SHORT" ? "sell" : "hold";
+
+    const entry = Number(posSize.entry) || 0;
+    const stop = Number(posSize.stop_loss) || 0;
+    const target = Number(posSize.target) || 0;
+    const stopDist = entry > 0 ? ((stop - entry) / entry * 100) : 0;
+    const targetDist = entry > 0 ? ((target - entry) / entry * 100) : 0;
+
+    const dailyArrow = p.daily_trend === "UP" ? "↑" : p.daily_trend === "DOWN" ? "↓" : "→";
+    const weeklyArrow = p.weekly_trend === "UP" ? "↑" : p.weekly_trend === "DOWN" ? "↓" : "→";
+    const monthlyArrow = p.monthly_trend === "UP" ? "↑" : p.monthly_trend === "DOWN" ? "↓" : "→";
+
+    const st1d = (p.higher_tf && p.higher_tf.supertrend_1d) || "UNKNOWN";
+    const st4h = (p.higher_tf && p.higher_tf.supertrend_4h) || "UNKNOWN";
+    const stLabel = st1d === "GREEN" && st4h === "GREEN" ? "GREEN (both)" :
+                    st1d === "RED" && st4h === "RED" ? "RED (both)" :
+                    st1d + " / " + st4h;
+
+    const scoreReasons = p.score_reasons || [];
+    const warnings = scoreReasons
+        .filter(r => r.includes("(-"))
+        .slice(0, 3)
+        .map(r => r.replace(/\s*\([^)]*\)\s*$/, "").trim());
+
+    return `
+    <div class="trader-summary">
+        <div class="ts-header">
+            <div>
+                <div class="ts-symbol">${p.symbol}</div>
+                <div class="ts-price">₹${safeNum(entry, 2)}</div>
+            </div>
+            <div class="ts-score-wrap">
+                <div class="ts-score-label">Combo Score — ${p.confidence_band || "N/A"} confidence</div>
+                <div class="ts-score-bar">
+                    <div class="ts-score-fill ${fillCls}" style="width: ${Math.max(0, Math.min(100, comboScore))}%"></div>
+                    <div class="ts-score-marker" style="left: ${Math.max(0, Math.min(100, comboScore))}%"></div>
+                </div>
+                <span class="ts-score-value">${safeNum(comboScore, 1)} / 100</span>
+            </div>
+            <div>
+                <span class="badge ${badgeCls(p.final_signal)} ts-signal">${p.final_signal}</span>
+            </div>
+        </div>
+
+        <div class="ts-trade">
+            <div class="ts-direction ${dirCls}">
+                ${dir} ${posSize.suggested_qty || 0} shares @ ₹${safeNum(entry, 2)}
+            </div>
+            <div class="ts-levels">
+                <div>Stop: <b>₹${safeNum(stop, 2)}</b> <span class="dist">(${stopDist >= 0 ? "+" : ""}${safeNum(stopDist, 1)}%)</span></div>
+                <div>Target: <b>₹${safeNum(target, 2)}</b> <span class="dist">(${targetDist >= 0 ? "+" : ""}${safeNum(targetDist, 1)}%)</span></div>
+                <div>Risk: <b>₹${safeNum(posSize.risk_amount, 0)}</b> <span class="dist">(${safeNum(posSize.risk_pct, 1)}%)</span></div>
+                <div>R:R: <b>1:${safeNum(posSize.risk_reward_ratio, 2)}</b></div>
+            </div>
+        </div>
+
+        <div class="ts-trend">
+            <span class="ts-trend-item">Trend:
+                <b>1D ${dailyArrow}</b>
+                <b>4H ${weeklyArrow}</b>
+                <b>1M ${monthlyArrow}</b>
+            </span>
+            <span class="ts-trend-item">Supertrend: <b>${stLabel}</b></span>
+            <span class="ts-trend-item">Prob Up: <b>${safeNum(statProb.probability_up, 1)}%</b></span>
+        </div>
+
+        ${warnings.length ? `
+        <div class="ts-warnings">
+            ${warnings.map(w => `<span class="ts-warning">⚠ ${w}</span>`).join("")}
+        </div>` : ""}
+    </div>
+    `;
+}
+
 function renderAnalysis(p){
     const opt = p.option_sentiment;
     let optionBlock = "";
@@ -378,6 +593,7 @@ function renderAnalysis(p){
     </table>`;
 
     let html = `
+    ${renderTraderSummary(p)}
     ${bannerHtml}
     <div class="card">
         <h2>${p.symbol}</h2>
