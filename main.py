@@ -1483,6 +1483,23 @@ def scanner():
     }
 
 
+@app.get("/index-option-sentiment")
+def index_option_sentiment():
+    """Fetch option sentiment for NIFTY, BANKNIFTY, FINNIFTY in one call."""
+    results = {}
+    for sym in ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
+        try:
+            data = get_option_sentiment(sym, is_index=True)
+            if data and not data.get("error"):
+                results[sym] = data
+            else:
+                results[sym] = {"error": (data or {}).get("error", "no data")}
+        except Exception as e:
+            results[sym] = {"error": str(e)}
+        time.sleep(2)
+    return results
+
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 

@@ -268,6 +268,10 @@ li{ margin:4px 0; font-size:13px; }
     </div>
     <button onclick="loadOptionSentiment()">Load Option Sentiment</button>
     <div id="optionResult"></div>
+
+    <h3 style="margin-top:20px">📊 Index Option Sentiment (NIFTY / BANKNIFTY / FINNIFTY)</h3>
+    <button onclick="loadIndexOptionSentiment()">Load Index Sentiment</button>
+    <div id="indexOptionResult" class="small" style="margin-top:8px;"></div>
 </div>
 
 <script>
@@ -761,27 +765,168 @@ async function loadOptionSentiment(symOverride){
     const isIdx = indexSyms.includes(sym);
 
     document.getElementById("optionResult").innerHTML = `<p class="small">Loading ${sym} (${isIdx ? "index" : "stock"})...</p>`;
-    const res = await fetch(`${API}/option-sentiment?symbol=${sym}&is_index=${isIdx}`);
-    if(!res.ok) return alert("Option sentiment API error");
+
+    let res;
+    try {
+        res = await fetch(`${API}/option-sentiment?symbol=${sym}&is_index=${isIdx}`);
+    } catch(e){
+        document.getElementById("optionResult").innerHTML = `<p class="small" style="color:#f66">Network error: ${e.message}</p>`;
+        return;
+    }
+    if(!res.ok){
+        document.getElementById("optionResult").innerHTML = `<p class="small" style="color:#f66">Option sentiment API error (${res.status})</p>`;
+        return;
+    }
     const d = await res.json();
     if(d.error){
         document.getElementById("optionResult").innerHTML = `<p class="small">${d.error}</p>`;
         return;
     }
+
+    const spot     = Number(d.spot)     || 0;
+    const maxPain  = Number(d.max_pain) || 0;
+    const callWall = Number(d.call_wall)|| 0;
+    const putWall  = Number(d.put_wall) || 0;
+
+    const distPct = (t) => spot > 0 ? ((t - spot) / spot * 100) : 0;
+    const distPts = (t) => spot > 0 ? (t - spot) : 0;
+
+    const maxPainPct  = distPct(maxPain);
+    const maxPainPts  = distPts(maxPain);
+    const callWallPct = distPct(callWall);
+    const callWallPts = distPts(callWall);
+    const putWallPct  = distPct(putWall);
+    const putWallPts  = distPts(putWall);
+
+    const supportDist    = Math.abs(putWallPct);
+    const resistanceDist = Math.abs(callWallPct);
+    const sideCloser     = supportDist < resistanceDist ? "support" : "resistance";
+
+    let suggestionBlock = "";
+    const wallsEqual = (callWall === putWall) || (maxPain === callWall && maxPain === putWall);
+    if(isIdx && wallsEqual){
+        suggestionBlock = `
+        <h4>🎯 Trigger-Based Suggestions (indices only)</h4>
+        <p class="small" style="color:#fb3">
+            <b>⚠ No clear OI structure — market pinned at ₹${safeNum(callWall,2)}.</b><br>
+            Max Pain, Call Wall, and Put Wall have collapsed to the same strike.<br>
+            Trigger suggestions are suppressed because Entry = Stop = Target (R:R undefined).<br>
+            Wait for the walls to separate before acting on triggers.
+        </p>`;
+    } else if(isIdx && maxPain > 0 && callWall > 0 && putWall > 0){
+        const longEntry  = maxPain;
+        const longStop   = maxPain - (maxPain - putWall) * 0.5;
+        const longTarget = callWall;
+        const longRisk   = longEntry - longStop;
+        const longReward = longTarget - longEntry;
+        const longRR     = longRisk > 0 ? (longReward / longRisk).toFixed(2) : "N/A";
+
+        const shortEntry  = putWall;
+        const shortStop   = putWall + (callWall - putWall) * 0.15;
+        const shortTarget = putWall - (callWall - putWall) * 0.15;
+        const shortRisk   = shortStop - shortEntry;
+        const shortReward = shortEntry - shortTarget;
+        const shortRR     = shortRisk > 0 ? (shortReward / shortRisk).toFixed(2) : "N/A";
+
+        suggestionBlock = `
+        <h4>🎯 Trigger-Based Suggestions (indices only)</h4>
+        <table>
+            <tr><td><b>LONG trigger</b></td>
+                <td>Close above ₹${safeNum(longEntry,2)} (Max Pain)</td></tr>
+            <tr><td>Entry / Stop / Target</td>
+                <td>₹${safeNum(longEntry,2)} / ₹${safeNum(longStop,2)} / ₹${safeNum(longTarget,2)}</td></tr>
+            <tr><td>R:R</td><td>1:${longRR}</td></tr>
+            <tr><td><b>SHORT trigger</b></td>
+                <td>Close below ₹${safeNum(shortEntry,2)} (Put Wall)</td></tr>
+            <tr><td>Entry / Stop / Target</td>
+                <td>₹${safeNum(shortEntry,2)} / ₹${safeNum(shortStop,2)} / ₹${safeNum(shortTarget,2)}</td></tr>
+            <tr><td>R:R</td><td>1:${shortRR}</td></tr>
+        </table>
+        <p class="small">
+            Current setup: <b>${d.bias || "NEUTRAL"}</b> — wait for either trigger.<br>
+            Support is ${safeNum(supportDist,2)}% away, resistance is ${safeNum(resistanceDist,2)}% away.<br>
+            ${sideCloser === "support"
+                ? "Breakdown is the faster trade if support breaks."
+                : "Breakout is the faster trade if resistance breaks."}
+        </p>`;
+    } else if(!isIdx){
+        suggestionBlock = `<p class="small">⚠ Stock option chains are thin — trigger suggestions are shown for indices only. Distances above are still useful for context.</p>`;
+    }
+
     document.getElementById("optionResult").innerHTML = `
     <table>
         <tr><td>Symbol</td><td>${sym} (${isIdx ? "index" : "stock"})</td></tr>
-        <tr><td>Spot</td><td>${safeNum(d.spot)}</td></tr>
-        <tr><td>ATM</td><td>${safeNum(d.atm)}</td></tr>
+        <tr><td>Spot</td><td>₹${safeNum(spot,2)}</td></tr>
+        <tr><td>ATM</td><td>₹${safeNum(d.atm,2)}</td></tr>
         <tr><td>PCR</td><td>${safeNum(d.pcr,3)}</td></tr>
         <tr><td>Bias</td><td><span class="badge ${badgeCls(d.bias)}">${d.bias || "N/A"}</span></td></tr>
-        <tr><td>Max Pain</td><td>${safeNum(d.max_pain)}</td></tr>
-        <tr><td>Max Pain Dist %</td><td>${safeNum(d.max_pain_dist_pct)}</td></tr>
-        <tr><td>Call Wall</td><td>${safeNum(d.call_wall)}</td></tr>
-        <tr><td>Put Wall</td><td>${safeNum(d.put_wall)}</td></tr>
+        <tr><td>Max Pain</td>
+            <td>₹${safeNum(maxPain,2)}
+            <span class="small">(${maxPainPct>=0?"+":""}${safeNum(maxPainPct,2)}%, ${maxPainPts>=0?"+":""}${safeNum(maxPainPts,0)} pts)</span></td></tr>
+        <tr><td>Call Wall (Resistance)</td>
+            <td>₹${safeNum(callWall,2)}
+            <span class="small">(${callWallPct>=0?"+":""}${safeNum(callWallPct,2)}%, ${callWallPts>=0?"+":""}${safeNum(callWallPts,0)} pts)</span></td></tr>
+        <tr><td>Put Wall (Support)</td>
+            <td>₹${safeNum(putWall,2)}
+            <span class="small">(${putWallPct>=0?"+":""}${safeNum(putWallPct,2)}%, ${putWallPts>=0?"+":""}${safeNum(putWallPts,0)} pts)</span></td></tr>
         <tr><td>Total Call OI</td><td>${safeInt(d.total_call_oi)}</td></tr>
         <tr><td>Total Put OI</td><td>${safeInt(d.total_put_oi)}</td></tr>
-    </table>`;
+    </table>
+    ${suggestionBlock}`;
+}
+
+async function loadIndexOptionSentiment(){
+    const box = document.getElementById("indexOptionResult");
+    box.innerHTML = `<p class="small">Loading indices (may take ~6s — NSE rate limit)...</p>`;
+
+    let res;
+    try {
+        res = await fetch(`${API}/index-option-sentiment`);
+    } catch(e){
+        box.innerHTML = `<p class="small" style="color:#f66">Network error: ${e.message}</p>`;
+        return;
+    }
+    if(!res.ok){
+        box.innerHTML = `<p class="small" style="color:#f66">Index option API error (${res.status})</p>`;
+        return;
+    }
+    const data = await res.json();
+
+    let html = `<div class="grid">`;
+    for(const [sym, d] of Object.entries(data)){
+        if(d.error){
+            html += `<div class="card"><h4>${sym}</h4><p class="small" style="color:#f66">${d.error}</p></div>`;
+            continue;
+        }
+        const spot     = Number(d.spot)     || 0;
+        const maxPain  = Number(d.max_pain) || 0;
+        const callWall = Number(d.call_wall)|| 0;
+        const putWall  = Number(d.put_wall) || 0;
+
+        const pct = (t) => spot > 0 ? ((t - spot) / spot * 100) : 0;
+        const pts = (t) => spot > 0 ? (t - spot) : 0;
+
+        html += `
+        <div class="card">
+            <h4>${sym}</h4>
+            <table>
+                <tr><td>Spot</td><td>₹${safeNum(spot,2)}</td></tr>
+                <tr><td>PCR</td><td>${safeNum(d.pcr,3)}</td></tr>
+                <tr><td>Bias</td><td><span class="badge ${badgeCls(d.bias)}">${d.bias || "N/A"}</span></td></tr>
+                <tr><td>Max Pain</td>
+                    <td>₹${safeNum(maxPain,2)}
+                    <span class="small">(${pct(maxPain)>=0?"+":""}${safeNum(pct(maxPain),2)}%, ${pts(maxPain)>=0?"+":""}${safeNum(pts(maxPain),0)} pts)</span></td></tr>
+                <tr><td>Call Wall</td>
+                    <td>₹${safeNum(callWall,2)}
+                    <span class="small">(${pct(callWall)>=0?"+":""}${safeNum(pct(callWall),2)}%, ${pts(callWall)>=0?"+":""}${safeNum(pts(callWall),0)} pts)</span></td></tr>
+                <tr><td>Put Wall</td>
+                    <td>₹${safeNum(putWall,2)}
+                    <span class="small">(${pct(putWall)>=0?"+":""}${safeNum(pct(putWall),2)}%, ${pts(putWall)>=0?"+":""}${safeNum(pts(putWall),0)} pts)</span></td></tr>
+            </table>
+        </div>`;
+    }
+    html += `</div>`;
+    box.innerHTML = html;
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
