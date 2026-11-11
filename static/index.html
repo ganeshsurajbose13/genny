@@ -489,6 +489,15 @@ function renderAnalysis(p){
     const opt = p.option_sentiment;
     let optionBlock = "";
     if(opt){
+        const optGrade     = opt.liquidity_grade || "OK";
+        const optExpiry    = opt.expiry_type || "unknown";
+        const optExpiryDt  = opt.expiry_date || "—";
+        const showWalls    = (optGrade === "OK" || optGrade === "THIN");
+        const expiryLabel  = optExpiry === "monthly_stock" ? `monthly (${optExpiryDt})`
+                           : optExpiry === "monthly"        ? `monthly (${optExpiryDt})`
+                           : optExpiry === "weekly"         ? `weekly (${optExpiryDt})`
+                           : optExpiryDt;
+
         optionBlock = `
         <h4>📊 Option Sentiment</h4>
         <table>
@@ -496,12 +505,22 @@ function renderAnalysis(p){
             <tr><td>ATM Strike</td><td>${safeNum(opt.atm)}</td></tr>
             <tr><td>PCR</td><td>${safeNum(opt.pcr,3)}</td></tr>
             <tr><td>Bias</td><td><span class="badge ${badgeCls(opt.bias)}">${opt.bias || "N/A"}</span></td></tr>
+            ${showWalls ? `
             <tr><td>Max Pain</td><td>${safeNum(opt.max_pain)}</td></tr>
             <tr><td>Max Pain Dist %</td><td>${safeNum(opt.max_pain_dist_pct)}</td></tr>
             <tr><td>Call Wall (Resistance)</td><td>${safeNum(opt.call_wall)}</td></tr>
             <tr><td>Put Wall (Support)</td><td>${safeNum(opt.put_wall)}</td></tr>
+            ` : `
+            <tr><td colspan="2" class="small" style="color:#f66">
+                ⚠ Max Pain / Call Wall / Put Wall hidden — liquidity grade: <b>${optGrade}</b><br>
+                ${optGrade === "UNRELIABLE" ? "OI too thin (&lt;50,000) or walls collapsed." : "Walls collapsed to one strike (pinned)."}<br>
+                Use the technical combo score for entry/exit decisions.
+            </td></tr>
+            `}
             <tr><td>Total Call OI</td><td>${safeInt(opt.total_call_oi)}</td></tr>
             <tr><td>Total Put OI</td><td>${safeInt(opt.total_put_oi)}</td></tr>
+            <tr><td>Expiry</td><td>${expiryLabel}</td></tr>
+            <tr><td>Liquidity Grade</td><td><b>${optGrade}</b></td></tr>
         </table>`;
     } else {
         optionBlock = `<p class="small">Option chain unavailable for this symbol.</p>`;
@@ -783,11 +802,47 @@ async function loadOptionSentiment(symOverride){
         return;
     }
 
-    const spot     = Number(d.spot)     || 0;
-    const maxPain  = Number(d.max_pain) || 0;
-    const callWall = Number(d.call_wall)|| 0;
-    const putWall  = Number(d.put_wall) || 0;
+    const spot       = Number(d.spot)     || 0;
+    const maxPain    = Number(d.max_pain) || 0;
+    const callWall   = Number(d.call_wall)|| 0;
+    const putWall    = Number(d.put_wall) || 0;
+    const grade      = d.liquidity_grade || "OK";
+    const gates      = d.gates || {};
+    const expiryType = d.expiry_type || "unknown";
+    const expiryDate = d.expiry_date || "—";
 
+    // Human-readable expiry label
+    const expiryLabel = {
+        "weekly":         `weekly (${expiryDate})`,
+        "monthly":        `monthly (${expiryDate})`,
+        "monthly_stock":  `monthly (${expiryDate})`,
+        "unknown":        "—"
+    }[expiryType] || expiryType;
+
+    // -------- UNRELIABLE: hide Max Pain / walls --------
+    if(!isIdx && grade === "UNRELIABLE"){
+        document.getElementById("optionResult").innerHTML = `
+        <table>
+            <tr><td>Symbol</td><td>${sym} (stock)</td></tr>
+            <tr><td>Spot</td><td>₹${safeNum(spot,2)}</td></tr>
+            <tr><td>ATM</td><td>₹${safeNum(d.atm,2)}</td></tr>
+            <tr><td>PCR</td><td>${safeNum(d.pcr,3)}</td></tr>
+            <tr><td>Bias</td><td><span class="badge ${badgeCls(d.bias)}">${d.bias || "N/A"}</span></td></tr>
+            <tr><td>Total Call OI</td><td>${safeInt(d.total_call_oi)}</td></tr>
+            <tr><td>Total Put OI</td><td>${safeInt(d.total_put_oi)}</td></tr>
+            <tr><td>Expiry</td><td>${expiryLabel}</td></tr>
+            <tr><td>Liquidity Grade</td><td><b>${grade}</b></td></tr>
+        </table>
+        <p class="small" style="color:#f66;margin-top:8px">
+            <b>Insufficient liquidity for Max Pain analysis.</b><br>
+            Call OI ${safeInt(d.total_call_oi)} and Put OI ${safeInt(d.total_put_oi)} are below the 50,000 minimum${!gates.walls_separated ? ", and Max Pain / Call Wall / Put Wall have collapsed to the same strike" : ""}.<br>
+            Max Pain, Call Wall, and Put Wall are <b>not reliable</b> for this stock.<br>
+            Do not use these levels for entries or exits. Use the technical combo score instead.
+        </p>`;
+        return;
+    }
+
+    // -------- Distance calculations --------
     const distPct = (t) => spot > 0 ? ((t - spot) / spot * 100) : 0;
     const distPts = (t) => spot > 0 ? (t - spot) : 0;
 
@@ -802,9 +857,20 @@ async function loadOptionSentiment(symOverride){
     const resistanceDist = Math.abs(callWallPct);
     const sideCloser     = supportDist < resistanceDist ? "support" : "resistance";
 
+    // -------- Trigger block --------
     let suggestionBlock = "";
     const wallsEqual = (callWall === putWall) || (maxPain === callWall && maxPain === putWall);
-    if(isIdx && wallsEqual){
+
+    if(isIdx && grade === "PINNED"){
+        suggestionBlock = `
+        <h4>🎯 Trigger-Based Suggestions (indices only)</h4>
+        <p class="small" style="color:#f66">
+            <b>⚠ PINNED — walls collapsed on BOTH weekly and monthly expiries.</b><br>
+            Max Pain, Call Wall, and Put Wall are equal on both expiries.<br>
+            Trigger suggestions are suppressed because Entry = Stop = Target (R:R undefined).<br>
+            No tradeable OI structure exists right now. Wait for walls to separate.
+        </p>`;
+    } else if(isIdx && wallsEqual){
         suggestionBlock = `
         <h4>🎯 Trigger-Based Suggestions (indices only)</h4>
         <p class="small" style="color:#fb3">
@@ -813,7 +879,7 @@ async function loadOptionSentiment(symOverride){
             Trigger suggestions are suppressed because Entry = Stop = Target (R:R undefined).<br>
             Wait for the walls to separate before acting on triggers.
         </p>`;
-    } else if(isIdx && maxPain > 0 && callWall > 0 && putWall > 0){
+    } else if(isIdx && grade === "OK" && maxPain > 0 && callWall > 0 && putWall > 0){
         const longEntry  = maxPain;
         const longStop   = maxPain - (maxPain - putWall) * 0.5;
         const longTarget = callWall;
@@ -828,8 +894,12 @@ async function loadOptionSentiment(symOverride){
         const shortReward = shortEntry - shortTarget;
         const shortRR     = shortRisk > 0 ? (shortReward / shortRisk).toFixed(2) : "N/A";
 
+        const structureLabel = expiryType === "monthly"
+            ? `<span class="small" style="color:#fb3">— based on monthly expiry structure (${expiryDate})</span>`
+            : "";
+
         suggestionBlock = `
-        <h4>🎯 Trigger-Based Suggestions (indices only)</h4>
+        <h4>🎯 Trigger-Based Suggestions (indices only) ${structureLabel}</h4>
         <table>
             <tr><td><b>LONG trigger</b></td>
                 <td>Close above ₹${safeNum(longEntry,2)} (Max Pain)</td></tr>
@@ -849,10 +919,21 @@ async function loadOptionSentiment(symOverride){
                 ? "Breakdown is the faster trade if support breaks."
                 : "Breakout is the faster trade if resistance breaks."}
         </p>`;
-    } else if(!isIdx){
-        suggestionBlock = `<p class="small">⚠ Stock option chains are thin — trigger suggestions are shown for indices only. Distances above are still useful for context.</p>`;
+    } else if(!isIdx && grade === "THIN"){
+        suggestionBlock = `
+        <p class="small" style="color:#fb3;margin-top:8px">
+            ⚠ <b>Thin liquidity</b> — Max Pain and walls are shown for context only.<br>
+            Trigger suggestions are not generated for stocks (bid-ask spread destroys theoretical R:R).
+        </p>`;
+    } else if(!isIdx && grade === "OK"){
+        suggestionBlock = `
+        <p class="small" style="color:#6c6;margin-top:8px">
+            ✓ Liquidity OK for context — but trigger suggestions are index-only.<br>
+            Use the technical combo score (from Analyze Stock) for entry/stop/target on stocks.
+        </p>`;
     }
 
+    // -------- Main table --------
     document.getElementById("optionResult").innerHTML = `
     <table>
         <tr><td>Symbol</td><td>${sym} (${isIdx ? "index" : "stock"})</td></tr>
@@ -871,9 +952,13 @@ async function loadOptionSentiment(symOverride){
             <span class="small">(${putWallPct>=0?"+":""}${safeNum(putWallPct,2)}%, ${putWallPts>=0?"+":""}${safeNum(putWallPts,0)} pts)</span></td></tr>
         <tr><td>Total Call OI</td><td>${safeInt(d.total_call_oi)}</td></tr>
         <tr><td>Total Put OI</td><td>${safeInt(d.total_put_oi)}</td></tr>
+        <tr><td>Expiry</td><td>${expiryLabel}</td></tr>
+        <tr><td>Liquidity Grade</td><td><b>${grade}</b></td></tr>
     </table>
     ${suggestionBlock}`;
 }
+
+
 
 async function loadIndexOptionSentiment(){
     const box = document.getElementById("indexOptionResult");
